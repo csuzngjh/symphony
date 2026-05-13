@@ -178,10 +178,6 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp timeout_seconds(_), do: nil
 
-  defp do_run_acpx_turns(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    do_run_turns(:prompt, session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
-  end
-
   defp handle_turn_completion(issue, workspace, _session_pid, _codex_update_recipient, _opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn) do
     Logger.info("Completed agent turn for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns_label(max_turns)}")
 
@@ -209,8 +205,8 @@ defmodule SymphonyElixir.AgentRunner do
     """
     Continuation guidance:
 
-    - The previous Codex turn completed normally, but the Linear issue is still in an active state.
-    - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
+    - The previous agent turn completed normally, but the Linear issue is still in an active state.
+    - This is continuation turn ##{turn_number} of #{max_turns_label(max_turns)} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.

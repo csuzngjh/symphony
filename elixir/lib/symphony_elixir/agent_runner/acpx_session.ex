@@ -608,6 +608,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         {:error, {:port_exit, classify_exit_status(status, raw_output(raw_acc))}}
 
       {:DOWN, ^monitor_ref, :port, ^port, _reason} ->
+        clean_port(port)
         {:error, :port_died}
     after
       timeout_ms ->
