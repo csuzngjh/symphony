@@ -1,7 +1,7 @@
 ---
 tracker:
   kind: linear
-  project_slug: "principles-d4d597b84d4d"
+  project_slug: "d4fdb8223f27"
   active_states:
     - Todo
     - In Progress
