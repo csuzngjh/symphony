@@ -50,7 +50,8 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    name = Keyword.get(opts, :name)
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   @spec sessions_ensure(pid(), String.t(), String.t(), keyword()) ::
@@ -209,6 +210,10 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       {:error, _} = error ->
         {:reply, error, state}
     end
+  end
+
+  def handle_info({:DOWN, _ref, :port, _port, _reason}, state) do
+    {:noreply, state}
   end
 
   defp do_sessions_ensure(state) do
@@ -449,7 +454,8 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         ]
       )
 
-    output = collect_command_output(port, [], timeout_ms)
+    monitor_ref = Port.monitor(port)
+    output = collect_command_output(port, monitor_ref, [], timeout_ms)
     clean_port(port)
     output
   end
@@ -470,7 +476,8 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         ]
       )
 
-    events = collect_output(port, [], [], timeout_ms)
+    monitor_ref = Port.monitor(port)
+    events = collect_output(port, monitor_ref, [], [], timeout_ms)
     clean_port(port)
     events
   end
@@ -491,21 +498,26 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     raise "ACPX execution strategy error: #{msg}"
   end
 
-  defp collect_command_output(port, acc, timeout_ms) do
+  defp collect_command_output(port, monitor_ref, acc, timeout_ms) do
     receive do
       {^port, {:data, {:eol, line}}} ->
-        collect_command_output(port, [line | acc], timeout_ms)
+        collect_command_output(port, monitor_ref, [line | acc], timeout_ms)
 
       {^port, {:data, {:noeol, chunk}}} ->
-        collect_command_output(port, acc ++ [to_string(chunk)], timeout_ms)
+        collect_command_output(port, monitor_ref, acc ++ [to_string(chunk)], timeout_ms)
 
       {^port, {:exit_status, 0}} ->
         {:ok, Enum.join(Enum.reverse(acc), "\n")}
 
       {^port, {:exit_status, status}} ->
         {:error, classify_exit_status(status, Enum.join(Enum.reverse(acc), "\n"))}
+
+      {:DOWN, ^monitor_ref, :port, ^port, _reason} ->
+        clean_port(port)
+        {:error, :port_died}
     after
       timeout_ms ->
+        clean_port(port)
         {:error, :timeout}
     end
   end
@@ -538,9 +550,15 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
       json_line ->
         case Jason.decode(json_line) do
-          {:ok, %{"acpxRecordId" => id}} -> id
-          {:ok, %{"result" => %{"acpxRecordId" => id}}} -> id
-          {:ok, %{"result" => %{"acpxSessionId" => id}}} -> id
+          {:ok, %{"acpxRecordId" => id}} ->
+            id
+
+          {:ok, %{"result" => %{"acpxRecordId" => id}}} ->
+            id
+
+          {:ok, %{"result" => %{"acpxSessionId" => id}}} ->
+            id
+
           _ ->
             output |> String.trim() |> String.split("\n") |> List.first() |> String.trim()
         end
@@ -569,42 +587,46 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
   defp stream_timeout_ms(_state), do: @turn_timeout_ms
 
-  defp collect_output(port, acc, raw_acc, timeout_ms) do
+  defp collect_output(port, monitor_ref, acc, raw_acc, timeout_ms) do
     receive do
       {^port, {:data, {:eol, line}}} ->
         line = to_string(line)
 
         case EventParser.parse(line) do
-          {:ok, event} -> collect_output(port, [event | acc], [line | raw_acc], timeout_ms)
-          {:error, _} -> collect_output(port, acc, [line | raw_acc], timeout_ms)
+          {:ok, event} -> collect_output(port, monitor_ref, [event | acc], [line | raw_acc], timeout_ms)
+          {:error, _} -> collect_output(port, monitor_ref, acc, [line | raw_acc], timeout_ms)
         end
 
       {^port, {:data, {:noeol, chunk}}} ->
-        collect_output(port, acc, raw_acc, to_string(chunk), timeout_ms)
+        collect_output(port, monitor_ref, acc, raw_acc, to_string(chunk), timeout_ms)
 
       {^port, {:exit_status, 0}} ->
         Enum.reverse(acc)
 
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, classify_exit_status(status, raw_output(raw_acc))}}
+
+      {:DOWN, ^monitor_ref, :port, ^port, _reason} ->
+        {:error, :port_died}
     after
       timeout_ms ->
+        clean_port(port)
         {:error, :timeout}
     end
   end
 
-  defp collect_output(port, acc, raw_acc, pending, timeout_ms) do
+  defp collect_output(port, monitor_ref, acc, raw_acc, pending, timeout_ms) do
     receive do
       {^port, {:data, {:eol, line}}} ->
         complete_line = pending <> to_string(line)
 
         case EventParser.parse(complete_line) do
-          {:ok, event} -> collect_output(port, [event | acc], [complete_line | raw_acc], timeout_ms)
-          {:error, _} -> collect_output(port, acc, [complete_line | raw_acc], timeout_ms)
+          {:ok, event} -> collect_output(port, monitor_ref, [event | acc], [complete_line | raw_acc], timeout_ms)
+          {:error, _} -> collect_output(port, monitor_ref, acc, [complete_line | raw_acc], timeout_ms)
         end
 
       {^port, {:data, {:noeol, chunk}}} ->
-        collect_output(port, acc, raw_acc, pending <> to_string(chunk), timeout_ms)
+        collect_output(port, monitor_ref, acc, raw_acc, pending <> to_string(chunk), timeout_ms)
 
       {^port, {:exit_status, 0}} ->
         Enum.reverse(acc)
@@ -612,8 +634,13 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       {^port, {:exit_status, status}} ->
         raw_acc = maybe_prepend_pending(raw_acc, pending)
         {:error, {:port_exit, classify_exit_status(status, raw_output(raw_acc))}}
+
+      {:DOWN, ^monitor_ref, :port, ^port, _reason} ->
+        clean_port(port)
+        {:error, :port_died}
     after
       timeout_ms ->
+        clean_port(port)
         {:error, :timeout}
     end
   end
@@ -698,9 +725,15 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
   defp clean_port(port) when is_port(port) do
     case :erlang.port_info(port) do
-      :undefined -> :ok
+      :undefined ->
+        :ok
+
       _ ->
-        try do Port.close(port) rescue ArgumentError -> :ok end
+        try do
+          Port.close(port)
+        rescue
+          ArgumentError -> :ok
+        end
     end
   end
 end

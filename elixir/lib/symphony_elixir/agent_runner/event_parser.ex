@@ -44,7 +44,7 @@ defmodule SymphonyElixir.AgentRunner.EventParser do
         }
 
   @spec parse(String.t()) :: {:ok, event()} | {:error, term()}
-  def parse(line) do
+  def parse(line) when is_binary(line) do
     trimmed = String.trim(line)
 
     cond do
@@ -76,6 +76,8 @@ defmodule SymphonyElixir.AgentRunner.EventParser do
         end
     end
   end
+
+  def parse(_line), do: {:error, :not_string}
 
   defp parse_session_update(params, raw) do
     update = Map.get(params, "update") || %{}
@@ -177,6 +179,7 @@ defmodule SymphonyElixir.AgentRunner.EventParser do
 
       [_ | _] ->
         last_result = List.last(result_events)
+
         %{
           status: "completed",
           stop_reason: last_result.data["stopReason"],

@@ -168,7 +168,10 @@ defmodule SymphonyElixir.Config.Schema do
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
-      |> validate_number(:max_turns, greater_than: 0)
+      |> validate_number(:max_turns, greater_than_or_equal_to: -1)
+      |> validate_change(:max_turns, fn :max_turns, value ->
+        if value == -1 or value > 0, do: [], else: [max_turns: "must be -1 (unlimited) or greater than 0"]
+      end)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
       |> validate_number(:continuation_retry_delay_ms, greater_than: 0)
       |> validate_number(:prompt_retries, greater_than_or_equal_to: 0)

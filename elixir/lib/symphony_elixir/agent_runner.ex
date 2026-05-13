@@ -82,7 +82,10 @@ defmodule SymphonyElixir.AgentRunner do
     agent = agent_name_from_config()
     session_name = "issue-#{issue.id}"
 
+    session_name_registry = :"acpx_#{issue.id}"
+
     case AcpxSession.start_link(
+           name: session_name_registry,
            agent: agent,
            cwd: workspace,
            recipient: codex_update_recipient,
@@ -120,7 +123,11 @@ defmodule SymphonyElixir.AgentRunner do
 
     case AcpxSession.exec(session_pid, prompt) do
       {:ok, _result} ->
-        handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
+        next_turn_fn = fn refreshed_issue, next_turn ->
+          do_run_acpx_turns_exec(session_pid, workspace, refreshed_issue, codex_update_recipient, opts, issue_state_fetcher, next_turn, max_turns)
+        end
+
+        handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn)
 
       {:error, reason} ->
         Logger.warning("Agent exec failed for #{issue_context(issue)} turn=#{turn_number}: #{inspect(reason)}")
@@ -138,9 +145,14 @@ defmodule SymphonyElixir.AgentRunner do
   defp acpx_options_from_config do
     settings = Config.settings!()
 
+    max_turns_acpx =
+      case settings.agent.max_turns do
+        n when is_integer(n) and n > 0 -> n
+        _ -> nil
+      end
+
     %{
       model: settings.agent.model,
-      max_turns: settings.agent.max_turns,
       allowed_tools: settings.agent.allowed_tools,
       prompt_retries: settings.agent.prompt_retries,
       timeout: timeout_seconds(settings.codex.turn_timeout_ms),
@@ -148,6 +160,9 @@ defmodule SymphonyElixir.AgentRunner do
       suppress_reads: true,
       no_terminal: true
     }
+    |> then(fn opts ->
+      if max_turns_acpx, do: Map.put(opts, :max_turns, max_turns_acpx), else: opts
+    end)
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
   end
@@ -164,7 +179,11 @@ defmodule SymphonyElixir.AgentRunner do
 
     case AcpxSession.prompt(session_pid, prompt) do
       {:ok, _result} ->
-        handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
+        next_turn_fn = fn refreshed_issue, next_turn ->
+          do_run_acpx_turns(session_pid, workspace, refreshed_issue, codex_update_recipient, opts, issue_state_fetcher, next_turn, max_turns)
+        end
+
+        handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn)
 
       {:error, reason} ->
         Logger.warning("Agent prompt failed for #{issue_context(issue)} turn=#{turn_number}: #{inspect(reason)}")
@@ -172,26 +191,17 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    Logger.info("Completed agent turn for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+  defp handle_turn_completion(issue, workspace, _session_pid, _codex_update_recipient, _opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn) do
+    Logger.info("Completed agent turn for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns_label(max_turns)}")
 
     case continue_with_issue?(issue, issue_state_fetcher) do
-      {:continue, refreshed_issue} when turn_number < max_turns ->
-        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      {:continue, refreshed_issue} when max_turns == -1 or turn_number < max_turns ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns_label(max_turns)}")
 
-        do_run_acpx_turns(
-          session_pid,
-          workspace,
-          refreshed_issue,
-          codex_update_recipient,
-          opts,
-          issue_state_fetcher,
-          turn_number + 1,
-          max_turns
-        )
+        next_turn_fn.(refreshed_issue, turn_number + 1)
 
       {:continue, refreshed_issue} ->
-        Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+        Logger.info("Reached max turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
         :ok
 
       {:done, _refreshed_issue} ->
@@ -272,4 +282,7 @@ defmodule SymphonyElixir.AgentRunner do
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
+
+  defp max_turns_label(-1), do: "unlimited"
+  defp max_turns_label(n), do: to_string(n)
 end
