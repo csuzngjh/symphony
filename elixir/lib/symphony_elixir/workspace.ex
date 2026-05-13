@@ -34,7 +34,10 @@ defmodule SymphonyElixir.Workspace do
   defp ensure_workspace(workspace, nil) do
     cond do
       File.dir?(workspace) ->
-        {:ok, workspace, false}
+        case check_workspace_safe_reuse(workspace) do
+          :ok -> {:ok, workspace, false}
+          {:error, _} = error -> error
+        end
 
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
@@ -82,6 +85,32 @@ defmodule SymphonyElixir.Workspace do
     File.rm_rf!(workspace)
     File.mkdir_p!(workspace)
     {:ok, workspace, true}
+  end
+
+  defp check_workspace_safe_reuse(workspace) do
+    git_dir = Path.join(workspace, ".git")
+
+    if File.dir?(git_dir) do
+      case System.cmd("git", ["-C", workspace, "status", "--porcelain"],
+             stderr_to_stdout: true,
+             cd: workspace
+           ) do
+        {output, 0} ->
+          if String.trim(output) == "" do
+            :ok
+          else
+            {:error, {:workspace_dirty, workspace, "uncommitted changes:\n#{String.trim(output)}"}}
+          end
+
+        {output, _status} ->
+          {:error, {:workspace_git_check_failed, workspace, output}}
+      end
+    else
+      {:error, {:workspace_not_git, workspace, "not a git repository"}}
+    end
+  rescue
+    e ->
+      {:error, {:workspace_reuse_check_failed, workspace, Exception.message(e)}}
   end
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
