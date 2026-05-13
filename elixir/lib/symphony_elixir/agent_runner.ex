@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.Codex.AppServer
+  alias SymphonyElixir.AgentRunner.AcpxSession
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
@@ -76,57 +76,129 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, _worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+    agent = agent_name_from_config()
+    session_name = "issue-#{issue.id}"
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
-      try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
-      after
-        AppServer.stop_session(session)
-      end
+    case AcpxSession.start_link(
+           agent: agent,
+           cwd: workspace,
+           recipient: codex_update_recipient,
+           issue_id: issue.id,
+           acpx_options: acpx_options_from_config()
+         ) do
+      {:ok, session_pid} ->
+        try do
+          # Create persistent session for multi-turn conversation
+          case AcpxSession.sessions_ensure(session_pid, session_name, workspace) do
+            {:ok, _session_id} ->
+              try do
+                do_run_acpx_turns(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+              after
+                AcpxSession.sessions_close(session_pid)
+              end
+
+            {:error, reason} ->
+              Logger.warning("Failed to create acpx session, falling back to exec mode: #{inspect(reason)}")
+              # Fallback to one-shot exec mode
+              do_run_acpx_turns_exec(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+          end
+        after
+          GenServer.stop(session_pid, :normal)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+  # Fallback exec-mode loop (no persistent sessions)
+  defp do_run_acpx_turns_exec(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
-    with {:ok, turn_session} <-
-           AppServer.run_turn(
-             app_session,
-             prompt,
-             issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
-           ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+    case AcpxSession.exec(session_pid, prompt) do
+      {:ok, _result} ->
+        handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      {:error, reason} ->
+        Logger.warning("Agent exec failed for #{issue_context(issue)} turn=#{turn_number}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
 
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+  defp agent_name_from_config do
+    case Config.settings!().codex.agent do
+      agent when is_binary(agent) and agent != "" -> agent
+      _ -> "claude"
+    end
+  end
 
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+  defp acpx_options_from_config do
+    settings = Config.settings!()
 
-          :ok
+    %{
+      model: settings.agent.model,
+      max_turns: settings.agent.max_turns,
+      allowed_tools: settings.agent.allowed_tools,
+      prompt_retries: settings.agent.prompt_retries,
+      timeout: timeout_seconds(settings.codex.turn_timeout_ms),
+      ttl: 300,
+      suppress_reads: true,
+      no_terminal: true
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
 
-        {:done, _refreshed_issue} ->
-          :ok
+  defp timeout_seconds(timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0 do
+    max(1, div(timeout_ms + 999, 1000))
+  end
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+  defp timeout_seconds(_), do: nil
+
+  # Multi-turn with persistent session
+  defp do_run_acpx_turns(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+
+    case AcpxSession.prompt(session_pid, prompt) do
+      {:ok, _result} ->
+        handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
+
+      {:error, reason} ->
+        Logger.warning("Agent prompt failed for #{issue_context(issue)} turn=#{turn_number}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    Logger.info("Completed agent turn for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+
+    case continue_with_issue?(issue, issue_state_fetcher) do
+      {:continue, refreshed_issue} when turn_number < max_turns ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+
+        do_run_acpx_turns(
+          session_pid,
+          workspace,
+          refreshed_issue,
+          codex_update_recipient,
+          opts,
+          issue_state_fetcher,
+          turn_number + 1,
+          max_turns
+        )
+
+      {:continue, refreshed_issue} ->
+        Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+        :ok
+
+      {:done, _refreshed_issue} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

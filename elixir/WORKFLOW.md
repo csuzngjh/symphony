@@ -1,7 +1,7 @@
 ---
 tracker:
   kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  project_slug: "principles-d4d597b84d4d"
   active_states:
     - Todo
     - In Progress
@@ -16,10 +16,10 @@ tracker:
 polling:
   interval_ms: 5000
 workspace:
-  root: ~/code/symphony-workspaces
+  root: D:/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
+    git clone --depth 1 https://github.com/csuzngjh/principles .
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get
     fi
@@ -28,8 +28,13 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+  # acpx options (optional):
+  # model: "sonnet"  # Model to use: "sonnet", "opus", "haiku", or "default"
+  # allowed_tools: []  # List of allowed tool names (empty = all tools)
+  # prompt_retries: 0  # Retry failed prompts on transient errors
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+  agent: "claude"  # acpx agent: "claude", "opencode", "codex"
+  command: npx -y @agentclientprotocol/claude-agent-acp --app-server
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -95,11 +100,39 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 
 ## Related skills
 
-- `linear`: interact with Linear.
-- `commit`: produce clean, logical commits during implementation.
-- `push`: keep remote branch current and publish updates.
+These skills are available and should be used strategically:
+
+### Core skills (always available)
+- `linear`: interact with Linear API for issue state transitions and metadata updates.
+- `commit`: produce clean, logical commits during implementation. Use before any `git commit`.
+- `push`: keep remote branch current and publish updates. Use after commits.
 - `pull`: keep branch updated with latest `origin/main` before handoff.
 - `land`: when ticket reaches `Merging`, explicitly open and follow `.codex/skills/land/SKILL.md`, which includes the `land` loop.
+
+### Quality and review skills
+- `tdd-workflow`: Use when implementing new features or fixing bugs. Enforces test-driven development with 80%+ coverage.
+- `requesting-code-review`: Use when code changes are complete and need peer review.
+- `verification-loop`: Use before moving to `Human Review` to ensure all validation passes.
+
+### Investigation and debugging skills
+- `triage-issue`: Use when encountering errors, bugs, or unexpected behavior. Applies systematic debugging methodology.
+- `brainstorming`: Use when facing complex design decisions or when stuck on a problem. Explores user intent before implementation.
+
+### Self-improvement skills
+- `capability-evolver`: Analyzes runtime history to identify improvements. Use when the agent encounters repeated failures or patterns.
+
+### When to invoke skills
+- If you encounter a bug: `triage-issue` first, then fix
+- If starting a new feature: `brainstorming` to clarify requirements, then `tdd-workflow`
+- If code is ready: `requesting-code-review` before `Human Review`
+- If validation is failing repeatedly: `capability-evolver` to identify systemic issues
+
+**How to invoke**: Include skill invocation in your prompt when needed, e.g., "Use the triage-issue skill to investigate this error."
+
+### Skills directory
+Available skills are defined in the Claude Code skills directory. Key skills:
+- `.claude/skills/` - Core skills
+- `.agents/skills/` - Agent orchestration skills
 
 ## Status map
 

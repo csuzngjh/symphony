@@ -95,6 +95,45 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
+  @query_by_identifier """
+  query SymphonyLinearIssueByIdentifier($id: String!, $relationFirst: Int!) {
+    issue(id: $id) {
+      id
+      identifier
+      title
+      description
+      priority
+      state {
+        name
+      }
+      branchName
+      url
+      assignee {
+        id
+      }
+      labels {
+        nodes {
+          name
+        }
+      }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue {
+            id
+            identifier
+            state {
+              name
+            }
+          }
+        }
+      }
+      createdAt
+      updatedAt
+    }
+  }
+  """
+
   @viewer_query """
   query SymphonyLinearViewer {
     viewer {
@@ -115,9 +154,16 @@ defmodule SymphonyElixir.Linear.Client do
       is_nil(project_slug) ->
         {:error, :missing_linear_project_slug}
 
+      explicit_issue_identifiers?(tracker.issue_identifiers) ->
+        with {:ok, assignee_filter} <- routing_assignee_filter(),
+             {:ok, issues} <- do_fetch_by_identifiers(tracker.issue_identifiers, assignee_filter) do
+          {:ok, filter_by_active_states(issues, tracker.active_states)}
+        end
+
       true ->
         with {:ok, assignee_filter} <- routing_assignee_filter() do
           do_fetch_by_states(project_slug, tracker.active_states, assignee_filter)
+          |> filter_by_configured_issue_identifiers(tracker.issue_identifiers)
         end
     end
   end
@@ -221,6 +267,26 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   @doc false
+  @spec filter_issue_identifiers_for_test([Issue.t()], [String.t()]) :: [Issue.t()]
+  def filter_issue_identifiers_for_test(issues, issue_identifiers) when is_list(issues) and is_list(issue_identifiers) do
+    {:ok, filtered} = filter_by_configured_issue_identifiers({:ok, issues}, issue_identifiers)
+    filtered
+  end
+
+  @doc false
+  @spec fetch_issue_identifiers_for_test([String.t()], (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issue_identifiers_for_test(issue_identifiers, graphql_fun)
+      when is_list(issue_identifiers) and is_function(graphql_fun, 2) do
+    issue_identifiers
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> do_fetch_by_identifiers_loop(acc: [], assignee_filter: nil, graphql_fun: graphql_fun)
+  end
+
+  @doc false
   @spec fetch_issue_states_by_ids_for_test([String.t()], (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
           {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issue_states_by_ids_for_test(issue_ids, graphql_fun)
@@ -270,6 +336,67 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp finalize_paginated_issues(acc_issues) when is_list(acc_issues), do: Enum.reverse(acc_issues)
+
+  defp explicit_issue_identifiers?(issue_identifiers) when is_list(issue_identifiers) do
+    Enum.any?(issue_identifiers, &(is_binary(&1) and String.trim(&1) != ""))
+  end
+
+  defp explicit_issue_identifiers?(_issue_identifiers), do: false
+
+  defp filter_by_configured_issue_identifiers({:ok, issues}, issue_identifiers) when is_list(issue_identifiers) do
+    allowed =
+      issue_identifiers
+      |> Enum.map(&to_string/1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> MapSet.new()
+
+    if MapSet.size(allowed) == 0 do
+      {:ok, issues}
+    else
+      {:ok, Enum.filter(issues, fn %Issue{identifier: identifier} -> MapSet.member?(allowed, identifier) end)}
+    end
+  end
+
+  defp filter_by_configured_issue_identifiers(result, _issue_identifiers), do: result
+
+  defp filter_by_active_states(issues, active_states) when is_list(issues) and is_list(active_states) do
+    allowed =
+      active_states
+      |> Enum.map(&to_string/1)
+      |> Enum.map(&String.downcase(String.trim(&1)))
+      |> MapSet.new()
+
+    Enum.filter(issues, fn
+      %Issue{state: state} when is_binary(state) -> MapSet.member?(allowed, String.downcase(String.trim(state)))
+      _ -> false
+    end)
+  end
+
+  defp do_fetch_by_identifiers(issue_identifiers, assignee_filter) when is_list(issue_identifiers) do
+    issue_identifiers
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> do_fetch_by_identifiers_loop(acc: [], assignee_filter: assignee_filter, graphql_fun: &graphql/2)
+  end
+
+  defp do_fetch_by_identifiers_loop([], acc: acc, assignee_filter: _assignee_filter, graphql_fun: _graphql_fun),
+    do: {:ok, Enum.reverse(acc)}
+
+  defp do_fetch_by_identifiers_loop([identifier | rest], acc: acc, assignee_filter: assignee_filter, graphql_fun: graphql_fun) do
+    case graphql_fun.(@query_by_identifier, %{id: identifier, relationFirst: @issue_page_size}) do
+      {:ok, body} ->
+        with {:ok, issue} <- decode_linear_issue_response(body, assignee_filter) do
+          next_acc = if is_nil(issue), do: acc, else: [issue | acc]
+          do_fetch_by_identifiers_loop(rest, acc: next_acc, assignee_filter: assignee_filter, graphql_fun: graphql_fun)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   defp do_fetch_issue_states(ids, assignee_filter) do
     do_fetch_issue_states(ids, assignee_filter, &graphql/2)
@@ -436,6 +563,18 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp decode_linear_page_response(response, assignee_filter), do: decode_linear_response(response, assignee_filter)
+
+  defp decode_linear_issue_response(%{"data" => %{"issue" => nil}}, _assignee_filter), do: {:ok, nil}
+
+  defp decode_linear_issue_response(%{"data" => %{"issue" => issue}}, assignee_filter) when is_map(issue) do
+    {:ok, normalize_issue(issue, assignee_filter)}
+  end
+
+  defp decode_linear_issue_response(%{"errors" => errors}, _assignee_filter) do
+    {:error, {:linear_graphql_errors, errors}}
+  end
+
+  defp decode_linear_issue_response(_unknown, _assignee_filter), do: {:error, :linear_unknown_payload}
 
   defp next_page_cursor(%{has_next_page: true, end_cursor: end_cursor})
        when is_binary(end_cursor) and byte_size(end_cursor) > 0 do
