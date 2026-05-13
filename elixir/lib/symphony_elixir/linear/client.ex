@@ -10,7 +10,50 @@ defmodule SymphonyElixir.Linear.Client do
   @max_error_body_log_bytes 1_000
 
   @query """
-  query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+  query SymphonyLinearPoll($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+    issues(filter: {state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        description
+        priority
+        state {
+          name
+        }
+        branchName
+        url
+        assignee {
+          id
+        }
+        labels {
+          nodes {
+            name
+          }
+        }
+        inverseRelations(first: $relationFirst) {
+          nodes {
+            type
+            issue {
+              id
+              identifier
+              state {
+                name
+              }
+            }
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+  """
+
+  @query_project """
+  query SymphonyLinearPollByProject($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
     issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
       nodes {
         id
@@ -145,26 +188,20 @@ defmodule SymphonyElixir.Linear.Client do
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     tracker = Config.settings!().tracker
-    project_slug = tracker.project_slug
 
-    cond do
-      is_nil(tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      is_nil(project_slug) ->
-        {:error, :missing_linear_project_slug}
-
-      explicit_issue_identifiers?(tracker.issue_identifiers) ->
-        with {:ok, assignee_filter} <- routing_assignee_filter(),
-             {:ok, issues} <- do_fetch_by_identifiers(tracker.issue_identifiers, assignee_filter) do
-          {:ok, filter_by_active_states(issues, tracker.active_states)}
-        end
-
-      true ->
-        with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_states(project_slug, tracker.active_states, assignee_filter)
+    if is_nil(tracker.api_key) do
+      {:error, :missing_linear_api_token}
+    else
+      with {:ok, assignee_filter} <- routing_assignee_filter() do
+        if explicit_issue_identifiers?(tracker.issue_identifiers) do
+          with {:ok, issues} <- do_fetch_by_identifiers(tracker.issue_identifiers, assignee_filter) do
+            {:ok, filter_by_active_states(issues, tracker.active_states)}
+          end
+        else
+          do_fetch_by_states(tracker.project_slug, tracker.active_states, assignee_filter)
           |> filter_by_configured_issue_identifiers(tracker.issue_identifiers)
         end
+      end
     end
   end
 
@@ -176,17 +213,11 @@ defmodule SymphonyElixir.Linear.Client do
       {:ok, []}
     else
       tracker = Config.settings!().tracker
-      project_slug = tracker.project_slug
 
-      cond do
-        is_nil(tracker.api_key) ->
-          {:error, :missing_linear_api_token}
-
-        is_nil(project_slug) ->
-          {:error, :missing_linear_project_slug}
-
-        true ->
-          do_fetch_by_states(project_slug, normalized_states, nil)
+      if is_nil(tracker.api_key) do
+        {:error, :missing_linear_api_token}
+      else
+        do_fetch_by_states(tracker.project_slug, normalized_states, nil)
       end
     end
   end
@@ -307,14 +338,27 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp do_fetch_by_states_page(project_slug, state_names, assignee_filter, after_cursor, acc_issues) do
-    with {:ok, body} <-
-           graphql(@query, %{
-             projectSlug: project_slug,
-             stateNames: state_names,
-             first: @issue_page_size,
-             relationFirst: @issue_page_size,
-             after: after_cursor
-           }),
+    {query, vars} =
+      if project_slug do
+        {@query_project,
+         %{
+           projectSlug: project_slug,
+           stateNames: state_names,
+           first: @issue_page_size,
+           relationFirst: @issue_page_size,
+           after: after_cursor
+         }}
+      else
+        {@query,
+         %{
+           stateNames: state_names,
+           first: @issue_page_size,
+           relationFirst: @issue_page_size,
+           after: after_cursor
+         }}
+      end
+
+    with {:ok, body} <- graphql(query, vars),
          {:ok, issues, page_info} <- decode_linear_page_response(body, assignee_filter) do
       updated_acc = prepend_page_issues(issues, acc_issues)
 

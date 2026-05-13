@@ -1,7 +1,7 @@
 ---
 tracker:
   kind: linear
-  project_slug: "d4fdb8223f27"
+  # project_slug: "d4fdb8223f27"  # 不设置 = 轮询整个团队下的所有项目
   active_states:
     - Todo
     - In Progress
