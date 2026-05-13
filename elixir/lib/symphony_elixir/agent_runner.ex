@@ -82,18 +82,23 @@ defmodule SymphonyElixir.AgentRunner do
     agent = agent_name_from_config()
     session_name = "issue-#{issue.id}"
 
+    send_phase_update(codex_update_recipient, issue, "starting_session", session_name)
+
     case AcpxSession.start_link(
-           agent: agent,
-           cwd: workspace,
-           recipient: codex_update_recipient,
-           issue_id: issue.id,
-           acpx_options: acpx_options_from_config()
-         ) do
+            agent: agent,
+            cwd: workspace,
+            recipient: codex_update_recipient,
+            issue_id: issue.id,
+            acpx_options: acpx_options_from_config()
+          ) do
       {:ok, session_pid} ->
         try do
-          # Create persistent session for multi-turn conversation
+          send_phase_update(codex_update_recipient, issue, "ensuring_session", session_name)
+
           case AcpxSession.sessions_ensure(session_pid, session_name, workspace) do
             {:ok, _session_id} ->
+              send_phase_update(codex_update_recipient, issue, "session_ready", session_name)
+
               try do
                 do_run_acpx_turns(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
               after
@@ -102,7 +107,7 @@ defmodule SymphonyElixir.AgentRunner do
 
             {:error, reason} ->
               Logger.warning("Failed to create acpx session, falling back to exec mode: #{inspect(reason)}")
-              # Fallback to one-shot exec mode
+              send_phase_update(codex_update_recipient, issue, "exec_fallback", session_name)
               do_run_acpx_turns_exec(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
           end
         after
@@ -113,6 +118,26 @@ defmodule SymphonyElixir.AgentRunner do
         {:error, reason}
     end
   end
+
+  defp send_phase_update(nil, _issue, _phase, _session_name), do: :ok
+
+  defp send_phase_update(recipient, %Issue{id: issue_id}, phase, session_name)
+       when is_binary(issue_id) and is_pid(recipient) do
+    send(
+      recipient,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :phase_update,
+         phase: phase,
+         session_name: session_name,
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    :ok
+  end
+
+  defp send_phase_update(_recipient, _issue, _phase, _session_name), do: :ok
 
   defp do_run_acpx_turns(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     do_run_turns(:prompt, session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
@@ -125,6 +150,8 @@ defmodule SymphonyElixir.AgentRunner do
   defp do_run_turns(mode, session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
     send_fn = if mode == :prompt, do: &AcpxSession.prompt/2, else: &AcpxSession.exec/2
+
+    send_phase_update(codex_update_recipient, issue, "prompt_sent_turn_#{turn_number}", "issue-#{issue.id}")
 
     case send_fn.(session_pid, prompt) do
       {:ok, _result} ->

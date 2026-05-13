@@ -13,7 +13,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.AgentRunner.{AcpxCli, EventParser}
+  alias SymphonyElixir.AgentRunner.{AcpxCli, EventParser, ProcessKiller}
 
   @builtin_agents ~w(claude codex gemini opencode cursor copilot droid iflow kilocode kimi kiro pi openclaw qoder qwen trae)
 
@@ -35,13 +35,15 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
           agent: String.t(),
           cwd: String.t(),
           port: port() | nil,
+          os_pid: pos_integer() | nil,
           recipient: pid() | nil,
           issue_id: String.t() | nil,
           session_name: String.t() | nil,
           session_id: String.t() | nil,
           turn_number: non_neg_integer(),
           acpx_options: acpx_options(),
-          execution_strategy: AcpxCli.execution_strategy()
+          execution_strategy: AcpxCli.execution_strategy(),
+          started_at: DateTime.t() | nil
         }
 
   @port_line_bytes 1_048_576
@@ -106,13 +108,15 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       agent: Keyword.get(opts, :agent, "claude"),
       cwd: Keyword.get(opts, :cwd, "."),
       port: nil,
+      os_pid: nil,
       recipient: Keyword.get(opts, :recipient),
       issue_id: Keyword.get(opts, :issue_id),
       session_name: nil,
       session_id: nil,
       turn_number: 0,
       acpx_options: acpx_opts,
-      execution_strategy: strategy
+      execution_strategy: strategy,
+      started_at: nil
     }
 
     {:ok, state}
@@ -214,7 +218,13 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
   def handle_info({:DOWN, _ref, :port, port, reason}, state) do
     Logger.debug("Port #{inspect(port)} down after cleanup: #{inspect(reason)}")
-    {:noreply, state}
+    {:noreply, %{state | port: nil}}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    cleanup_port(state.port, state.os_pid)
+    :ok
   end
 
   defp do_sessions_ensure(state) do
@@ -455,9 +465,16 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         ]
       )
 
+    os_pid = port_os_pid(port)
+
+    if is_pid(self()) do
+      Process.put(:symphony_port, port)
+      Process.put(:symphony_os_pid, os_pid)
+    end
+
     monitor_ref = Port.monitor(port)
     output = collect_command_output(port, monitor_ref, [], timeout_ms)
-    clean_port(port)
+    cleanup_port(port, os_pid)
     output
   end
 
@@ -477,9 +494,16 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         ]
       )
 
+    os_pid = port_os_pid(port)
+
+    if is_pid(self()) do
+      Process.put(:symphony_port, port)
+      Process.put(:symphony_os_pid, os_pid)
+    end
+
     monitor_ref = Port.monitor(port)
     events = collect_output(port, monitor_ref, [], [], timeout_ms)
-    clean_port(port)
+    cleanup_port(port, os_pid)
     events
   end
 
@@ -514,11 +538,11 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         {:error, classify_exit_status(status, Enum.join(Enum.reverse(acc), "\n"))}
 
       {:DOWN, ^monitor_ref, :port, ^port, _reason} ->
-        clean_port(port)
+        cleanup_port(port)
         {:error, :port_died}
     after
       timeout_ms ->
-        clean_port(port)
+        cleanup_port(port)
         {:error, :timeout}
     end
   end
@@ -608,11 +632,11 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         {:error, {:port_exit, classify_exit_status(status, raw_output(raw_acc))}}
 
       {:DOWN, ^monitor_ref, :port, ^port, _reason} ->
-        clean_port(port)
+        cleanup_port(port)
         {:error, :port_died}
     after
       timeout_ms ->
-        clean_port(port)
+        cleanup_port(port)
         {:error, :timeout}
     end
   end
@@ -638,11 +662,11 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         {:error, {:port_exit, classify_exit_status(status, raw_output(raw_acc))}}
 
       {:DOWN, ^monitor_ref, :port, ^port, _reason} ->
-        clean_port(port)
+        cleanup_port(port)
         {:error, :port_died}
     after
       timeout_ms ->
-        clean_port(port)
+        cleanup_port(port)
         {:error, :timeout}
     end
   end
@@ -725,7 +749,27 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
   defp agent_subcommand(agent) when agent in @builtin_agents, do: agent
   defp agent_subcommand(agent) when is_binary(agent), do: agent
 
-  defp clean_port(port) when is_port(port) do
+  defp cleanup_port(port, os_pid) do
+    if is_integer(os_pid) and os_pid > 0 do
+      ProcessKiller.kill_tree(os_pid)
+    end
+
+    close_port(port)
+  end
+
+  defp cleanup_port(port) when is_port(port) do
+    os_pid = Process.delete(:symphony_os_pid)
+
+    if is_integer(os_pid) and os_pid > 0 do
+      ProcessKiller.kill_tree(os_pid)
+    end
+
+    close_port(port)
+  end
+
+  defp cleanup_port(_port), do: :ok
+
+  defp close_port(port) when is_port(port) do
     case :erlang.port_info(port) do
       :undefined ->
         :ok
@@ -738,4 +782,18 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         end
     end
   end
+
+  defp close_port(_port), do: :ok
+
+  defp port_os_pid(port) when is_port(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} when is_integer(os_pid) and os_pid > 0 ->
+        os_pid
+
+      _ ->
+        nil
+    end
+  end
+
+  defp port_os_pid(_port), do: nil
 end

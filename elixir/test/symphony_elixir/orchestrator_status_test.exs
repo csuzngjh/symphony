@@ -897,7 +897,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert next_poll_in_ms <= 50
   end
 
-  test "orchestrator restarts stalled workers with retry backoff" do
+  test "orchestrator restarts stalled workers with attempt lock" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
       codex_stall_timeout_ms: 1_000
@@ -920,12 +920,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
+    ref = make_ref()
     stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
     initial_state = :sys.get_state(pid)
 
     running_entry = %{
       pid: worker_pid,
-      ref: make_ref(),
+      ref: ref,
       identifier: "MT-STALL",
       issue: %Issue{id: issue_id, identifier: "MT-STALL", state: "In Progress"},
       session_id: "thread-stall-turn-stall",
@@ -942,17 +943,25 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     send(pid, :tick)
-    Process.sleep(100)
+    Process.sleep(200)
     state = :sys.get_state(pid)
 
     refute Process.alive?(worker_pid)
+
+    assert Map.has_key?(state.running, issue_id)
+    assert state.running[issue_id].status == :terminating
+
+    send(pid, {:DOWN, ref, :process, worker_pid, :shutdown})
+    Process.sleep(100)
+    state = :sys.get_state(pid)
+
     refute Map.has_key?(state.running, issue_id)
 
     assert %{
              attempt: 1,
              due_at_ms: due_at_ms,
              identifier: "MT-STALL",
-             error: "stalled for " <> _
+             error: "stalled/terminated: :shutdown"
            } = state.retry_attempts[issue_id]
 
     assert is_integer(due_at_ms)

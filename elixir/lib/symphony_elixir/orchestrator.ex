@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
+  @attempt_shutdown_timeout_ms 15_000
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -127,13 +128,31 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       issue_id ->
-        {running_entry, state} = pop_running_entry(state, issue_id)
-        state = record_session_completion_totals(state, running_entry)
+        running_entry = Map.get(running, issue_id)
+        status = Map.get(running_entry, :status, :running)
         session_id = running_entry_session_id(running_entry)
 
+        force_kill_ref = Map.get(running_entry || %{}, :force_kill_timer_ref)
+        if is_reference(force_kill_ref), do: Process.cancel_timer(force_kill_ref)
+
+        {running_entry, state} = pop_running_entry(state, issue_id)
+        state = record_session_completion_totals(state, running_entry)
+
         state =
-          case reason do
-            :normal ->
+          cond do
+            status == :terminating ->
+              next_attempt = next_retry_attempt_from_running(running_entry)
+
+              Logger.warning("Terminated attempt confirmed dead for issue_id=#{issue_id} session_id=#{session_id}; scheduling retry")
+
+              schedule_issue_retry(state, issue_id, next_attempt, %{
+                identifier: running_entry.identifier,
+                error: "stalled/terminated: #{inspect(reason)}",
+                worker_host: Map.get(running_entry, :worker_host),
+                workspace_path: Map.get(running_entry, :workspace_path)
+              })
+
+            reason == :normal ->
               Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
               state
@@ -145,7 +164,7 @@ defmodule SymphonyElixir.Orchestrator do
                 workspace_path: Map.get(running_entry, :workspace_path)
               })
 
-            _ ->
+            true ->
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
               next_attempt = next_retry_attempt_from_running(running_entry)
@@ -217,6 +236,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
+
+  def handle_info({:force_kill_attempt, issue_id}, %{running: running} = state) do
+    case Map.get(running, issue_id) do
+      %{status: :terminating} = entry ->
+        Logger.warning("Force-killing attempt that did not shutdown in time: issue_id=#{issue_id}")
+
+        pid = Map.get(entry, :pid)
+        if is_pid(pid) do
+          Process.exit(pid, :kill)
+        end
+
+        {:noreply, state}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
 
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
@@ -423,6 +459,9 @@ defmodule SymphonyElixir.Orchestrator do
         state = record_session_completion_totals(state, running_entry)
         worker_host = Map.get(running_entry, :worker_host)
 
+        force_kill_ref = Map.get(running_entry, :force_kill_timer_ref)
+        if is_reference(force_kill_ref), do: Process.cancel_timer(force_kill_ref)
+
         if cleanup_workspace do
           cleanup_issue_workspace(identifier, worker_host)
         end
@@ -473,16 +512,25 @@ defmodule SymphonyElixir.Orchestrator do
       identifier = Map.get(running_entry, :identifier, issue_id)
       session_id = running_entry_session_id(running_entry)
 
-      Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
+      if Map.get(running_entry, :status) == :terminating do
+        Logger.warning("Issue already terminating: issue_id=#{issue_id} issue_identifier=#{identifier}; waiting for shutdown")
+        state
+      else
+        Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; terminating attempt")
 
-      next_attempt = next_retry_attempt_from_running(running_entry)
+        pid = Map.get(running_entry, :pid)
 
-      state
-      |> terminate_running_issue(issue_id, false)
-      |> schedule_issue_retry(issue_id, next_attempt, %{
-        identifier: identifier,
-        error: "stalled for #{elapsed_ms}ms without codex activity"
-      })
+        if is_pid(pid) do
+          terminate_task(pid)
+        end
+
+        terminating_entry =
+          running_entry
+          |> Map.put(:status, :terminating)
+          |> Map.put(:force_kill_timer_ref, Process.send_after(self(), {:force_kill_attempt, issue_id}, @attempt_shutdown_timeout_ms))
+
+        %{state | running: Map.put(state.running, issue_id, terminating_entry)}
+      end
     else
       state
     end
@@ -562,13 +610,21 @@ defmodule SymphonyElixir.Orchestrator do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       !MapSet.member?(claimed, issue.id) and
-      !Map.has_key?(running, issue.id) and
+      !issue_has_active_or_terminating_attempt?(running, issue.id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running) and
       worker_slots_available?(state)
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp issue_has_active_or_terminating_attempt?(running, issue_id) do
+    case Map.get(running, issue_id) do
+      nil -> false
+      %{status: status} when status in [:terminating] -> true
+      _ -> true
+    end
+  end
 
   defp state_slots_available?(%Issue{state: issue_state}, running) when is_map(running) do
     limit = Config.max_concurrent_agents_for_state(issue_state)
@@ -709,10 +765,16 @@ defmodule SymphonyElixir.Orchestrator do
             issue: issue,
             worker_host: worker_host,
             workspace_path: nil,
+            status: :running,
+            session_name: nil,
             session_id: nil,
+            attempt_id: issue.id,
+            phase: "starting",
             last_codex_message: nil,
             last_codex_timestamp: nil,
             last_codex_event: nil,
+            last_raw_event_at: nil,
+            last_raw_preview: nil,
             codex_app_server_pid: nil,
             codex_input_tokens: 0,
             codex_output_tokens: 0,
@@ -1125,7 +1187,13 @@ defmodule SymphonyElixir.Orchestrator do
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
+          attempt_status: Map.get(metadata, :status, :running),
           session_id: metadata.session_id,
+          session_name: Map.get(metadata, :session_name),
+          attempt_id: Map.get(metadata, :attempt_id),
+          phase: Map.get(metadata, :phase),
+          last_raw_event_at: Map.get(metadata, :last_raw_event_at),
+          last_raw_preview: Map.get(metadata, :last_raw_preview),
           codex_app_server_pid: metadata.codex_app_server_pid,
           codex_input_tokens: metadata.codex_input_tokens,
           codex_output_tokens: metadata.codex_output_tokens,
@@ -1198,13 +1266,24 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_cached_read = Map.get(running_entry, :codex_last_reported_cached_read_tokens, 0)
     last_reported_cached_write = Map.get(running_entry, :codex_last_reported_cached_write_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
+    session_name = Map.get(update, :session_name) || Map.get(running_entry, :session_name)
+
+    {phase, raw_preview} =
+      case update do
+        %{phase: p} when is_binary(p) -> {p, Map.get(update, :raw_preview)}
+        _ -> {Map.get(running_entry, :phase), nil}
+      end
 
     {
       Map.merge(running_entry, %{
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
+        session_name: session_name,
+        phase: phase,
         last_codex_event: event,
+        last_raw_event_at: Map.get(update, :raw_event_at) || Map.get(running_entry, :last_raw_event_at),
+        last_raw_preview: raw_preview || Map.get(running_entry, :last_raw_preview),
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,

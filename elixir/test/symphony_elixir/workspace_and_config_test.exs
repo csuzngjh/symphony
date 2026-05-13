@@ -50,45 +50,99 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
     assert {:ok, first_workspace} = Workspace.create_for_issue("MT/Det")
-    assert {:ok, second_workspace} = Workspace.create_for_issue("MT/Det")
-
-    assert first_workspace == second_workspace
     assert Path.basename(first_workspace) == "MT_Det"
+
+    System.cmd("git", ["-C", first_workspace, "init", "-b", "main"])
+    System.cmd("git", ["-C", first_workspace, "config", "user.name", "Test User"])
+    System.cmd("git", ["-C", first_workspace, "config", "user.email", "test@example.com"])
+    System.cmd("git", ["-C", first_workspace, "add", "."])
+    System.cmd("git", ["-C", first_workspace, "commit", "-m", "initial"])
+
+    assert {:ok, second_workspace} = Workspace.create_for_issue("MT/Det")
+    assert first_workspace == second_workspace
   end
 
-  test "workspace reuses existing issue directory without deleting local changes" do
-    workspace_root =
+  test "workspace rejects dirty git workspace with workspace_dirty error" do
+    test_root =
       Path.join(
         System.tmp_dir!(),
-        "symphony-elixir-workspace-reuse-#{System.unique_integer([:positive])}"
+        "symphony-elixir-workspace-dirty-reject-#{System.unique_integer([:positive])}"
       )
 
     try do
+      workspace_root = Path.join(test_root, "workspaces")
+
       write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        hook_after_create: "echo first > README.md"
+        workspace_root: workspace_root
       )
 
-      assert {:ok, first_workspace} = Workspace.create_for_issue("MT-REUSE")
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-DIRTY")
 
-      File.write!(Path.join(first_workspace, "README.md"), "changed\n")
-      File.write!(Path.join(first_workspace, "local-progress.txt"), "in progress\n")
-      File.mkdir_p!(Path.join(first_workspace, "deps"))
-      File.mkdir_p!(Path.join(first_workspace, "_build"))
-      File.mkdir_p!(Path.join(first_workspace, "tmp"))
-      File.write!(Path.join([first_workspace, "deps", "cache.txt"]), "cached deps\n")
-      File.write!(Path.join([first_workspace, "_build", "artifact.txt"]), "compiled artifact\n")
-      File.write!(Path.join([first_workspace, "tmp", "scratch.txt"]), "remove me\n")
+      System.cmd("git", ["-C", workspace, "init", "-b", "main"])
+      System.cmd("git", ["-C", workspace, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", workspace, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", workspace, "add", "."])
+      System.cmd("git", ["-C", workspace, "commit", "-m", "initial"])
 
-      assert {:ok, second_workspace} = Workspace.create_for_issue("MT-REUSE")
-      assert second_workspace == first_workspace
-      assert File.read!(Path.join(second_workspace, "README.md")) == "changed\n"
-      assert File.read!(Path.join(second_workspace, "local-progress.txt")) == "in progress\n"
-      assert File.read!(Path.join([second_workspace, "deps", "cache.txt"])) == "cached deps\n"
-      assert File.read!(Path.join([second_workspace, "_build", "artifact.txt"])) == "compiled artifact\n"
-      assert File.read!(Path.join([second_workspace, "tmp", "scratch.txt"])) == "remove me\n"
+      File.write!(Path.join(workspace, "uncommitted.txt"), "dirty\n")
+
+      assert {:error, {:workspace_dirty, _path, _message}} =
+               Workspace.create_for_issue("MT-DIRTY")
     after
-      File.rm_rf(workspace_root)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace reuses clean git workspace successfully" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-clean-reuse-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-CLEAN")
+
+      System.cmd("git", ["-C", workspace, "init", "-b", "main"])
+      System.cmd("git", ["-C", workspace, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", workspace, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", workspace, "add", "."])
+      System.cmd("git", ["-C", workspace, "commit", "-m", "initial"])
+
+      assert {:ok, ^workspace} = Workspace.create_for_issue("MT-CLEAN")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace rejects non-git existing directory" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-non-git-reject-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-NOGIT")
+
+      File.write!(Path.join(workspace, "extra.txt"), "extra\n")
+
+      assert {:error, {:workspace_not_git, _path, _message}} =
+               Workspace.create_for_issue("MT-NOGIT")
+    after
+      File.rm_rf(test_root)
     end
   end
 
