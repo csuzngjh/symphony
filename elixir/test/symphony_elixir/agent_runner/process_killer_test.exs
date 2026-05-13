@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.AgentRunner.ProcessKillerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias SymphonyElixir.AgentRunner.ProcessKiller
 

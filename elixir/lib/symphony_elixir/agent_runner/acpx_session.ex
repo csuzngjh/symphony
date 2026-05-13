@@ -538,9 +538,11 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         {:error, classify_exit_status(status, Enum.join(Enum.reverse(acc), "\n"))}
 
       {:DOWN, ^monitor_ref, :port, ^port, _reason} ->
+        cleanup_port(port)
         {:error, :port_died}
     after
       timeout_ms ->
+        cleanup_port(port)
         {:error, :timeout}
     end
   end
@@ -752,16 +754,22 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       ProcessKiller.kill_tree(os_pid)
     end
 
-    cleanup_port(port)
+    close_port(port)
   end
 
   defp cleanup_port(port) when is_port(port) do
-    os_pid = Process.get(:symphony_os_pid)
+    os_pid = Process.delete(:symphony_os_pid)
 
     if is_integer(os_pid) and os_pid > 0 do
       ProcessKiller.kill_tree(os_pid)
     end
 
+    close_port(port)
+  end
+
+  defp cleanup_port(_port), do: :ok
+
+  defp close_port(port) when is_port(port) do
     case :erlang.port_info(port) do
       :undefined ->
         :ok
@@ -775,7 +783,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     end
   end
 
-  defp cleanup_port(_port), do: :ok
+  defp close_port(_port), do: :ok
 
   defp port_os_pid(port) when is_port(port) do
     case Port.info(port, :os_pid) do

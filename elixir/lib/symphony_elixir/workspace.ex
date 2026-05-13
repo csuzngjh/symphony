@@ -49,6 +49,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp ensure_workspace(workspace, worker_host) when is_binary(worker_host) do
+    # TODO: Add git dirty check for remote workspaces (check_workspace_safe_reuse equivalent)
     script =
       [
         "set -eu",

@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.AgentRunner.AcpxSessionLifecycleTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias SymphonyElixir.AgentRunner.AcpxSession
   alias SymphonyElixir.AgentRunner.ProcessKiller

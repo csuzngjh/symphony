@@ -60,22 +60,34 @@ end
 defmodule SymphonyElixir.AgentRunner.ProcessKiller.WindowsTaskkill do
   @moduledoc """
   Kills a process tree on Windows via `taskkill /PID <pid> /T /F`.
+
+  Access-denied errors are logged but still return `:ok` (the process
+  may still be alive, but we treat permission-limited cleanup as
+  best-effort).
   """
 
+  require Logger
   @behaviour SymphonyElixir.AgentRunner.ProcessKiller
 
   @impl true
   def kill_tree(os_pid, _opts) when is_integer(os_pid) and os_pid > 0 do
     pid_str = Integer.to_string(os_pid)
 
-    case System.cmd("cmd", ["/S", "/C", "taskkill /PID #{pid_str} /T /F >nul 2>&1"],
+    case System.cmd("taskkill", ["/PID", pid_str, "/T", "/F"],
            stderr_to_stdout: true
          ) do
       {_output, 0} ->
         :ok
 
-      {_output, _} ->
-        :ok
+      {output, _status} ->
+        if String.contains?(output, "not found") or
+             String.contains?(output, "no running") or
+             String.contains?(output, "不存在") do
+          :ok
+        else
+          Logger.warning("ProcessKiller taskkill non-fatal: pid=#{pid_str} output=#{String.trim(output)}")
+          :ok
+        end
     end
   end
 
