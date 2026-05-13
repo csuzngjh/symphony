@@ -82,10 +82,7 @@ defmodule SymphonyElixir.AgentRunner do
     agent = agent_name_from_config()
     session_name = "issue-#{issue.id}"
 
-    session_name_registry = :"acpx_#{issue.id}"
-
     case AcpxSession.start_link(
-           name: session_name_registry,
            agent: agent,
            cwd: workspace,
            recipient: codex_update_recipient,
@@ -117,20 +114,28 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  # Fallback exec-mode loop (no persistent sessions)
-  defp do_run_acpx_turns_exec(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_acpx_turns(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    do_run_turns(:prompt, session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
+  end
 
-    case AcpxSession.exec(session_pid, prompt) do
+  defp do_run_acpx_turns_exec(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    do_run_turns(:exec, session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
+  end
+
+  defp do_run_turns(mode, session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    send_fn = if mode == :prompt, do: &AcpxSession.prompt/2, else: &AcpxSession.exec/2
+
+    case send_fn.(session_pid, prompt) do
       {:ok, _result} ->
         next_turn_fn = fn refreshed_issue, next_turn ->
-          do_run_acpx_turns_exec(session_pid, workspace, refreshed_issue, codex_update_recipient, opts, issue_state_fetcher, next_turn, max_turns)
+          do_run_turns(mode, session_pid, workspace, refreshed_issue, codex_update_recipient, opts, issue_state_fetcher, next_turn, max_turns)
         end
 
         handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn)
 
       {:error, reason} ->
-        Logger.warning("Agent exec failed for #{issue_context(issue)} turn=#{turn_number}: #{inspect(reason)}")
+        Logger.warning("Agent #{mode} failed for #{issue_context(issue)} turn=#{turn_number}: #{inspect(reason)}")
         {:error, reason}
     end
   end
@@ -173,22 +178,8 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp timeout_seconds(_), do: nil
 
-  # Multi-turn with persistent session
   defp do_run_acpx_turns(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
-
-    case AcpxSession.prompt(session_pid, prompt) do
-      {:ok, _result} ->
-        next_turn_fn = fn refreshed_issue, next_turn ->
-          do_run_acpx_turns(session_pid, workspace, refreshed_issue, codex_update_recipient, opts, issue_state_fetcher, next_turn, max_turns)
-        end
-
-        handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn)
-
-      {:error, reason} ->
-        Logger.warning("Agent prompt failed for #{issue_context(issue)} turn=#{turn_number}: #{inspect(reason)}")
-        {:error, reason}
-    end
+    do_run_turns(:prompt, session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
   end
 
   defp handle_turn_completion(issue, workspace, _session_pid, _codex_update_recipient, _opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn) do

@@ -11,6 +11,7 @@ defmodule SymphonyElixir.ShellResolutionTest do
       end
 
       original = Application.get_env(:symphony_elixir, :os_type)
+
       try do
         Application.put_env(:symphony_elixir, :os_type, :unix)
         assert ShellResolution.resolve("echo hello", resolver) == {"sh", ["-lc", "echo hello"]}
@@ -27,6 +28,7 @@ defmodule SymphonyElixir.ShellResolutionTest do
       end
 
       original = Application.get_env(:symphony_elixir, :os_type)
+
       try do
         Application.put_env(:symphony_elixir, :os_type, :windows)
         assert ShellResolution.resolve("echo hello", resolver) == {"pwsh", ["-NoProfile", "-Command", "echo hello"]}
@@ -44,6 +46,7 @@ defmodule SymphonyElixir.ShellResolutionTest do
       end
 
       original = Application.get_env(:symphony_elixir, :os_type)
+
       try do
         Application.put_env(:symphony_elixir, :os_type, :windows)
         assert ShellResolution.resolve("echo hello", resolver) == {"powershell", ["-NoProfile", "-Command", "echo hello"]}
@@ -56,6 +59,7 @@ defmodule SymphonyElixir.ShellResolutionTest do
       resolver = fn _ -> nil end
 
       original = Application.get_env(:symphony_elixir, :os_type)
+
       try do
         Application.put_env(:symphony_elixir, :os_type, :windows)
         assert ShellResolution.resolve("echo hello", resolver) == {"cmd", ["/S", "/C", "echo hello"]}
@@ -68,6 +72,7 @@ defmodule SymphonyElixir.ShellResolutionTest do
       resolver = fn _ -> nil end
 
       original = Application.get_env(:symphony_elixir, :os_type)
+
       try do
         Application.put_env(:symphony_elixir, :os_type, :unix)
         assert ShellResolution.resolve("echo hello", resolver) == {"sh", ["-lc", "echo hello"]}
@@ -83,6 +88,7 @@ defmodule SymphonyElixir.ShellResolutionTest do
       end
 
       original = Application.get_env(:symphony_elixir, :os_type)
+
       try do
         Application.put_env(:symphony_elixir, :os_type, :unix)
         assert ShellResolution.resolve("git clone foo && npm install", resolver) == {"sh", ["-lc", "git clone foo && npm install"]}
@@ -94,12 +100,13 @@ defmodule SymphonyElixir.ShellResolutionTest do
 
   describe "format_hook_error/4" do
     test "includes shell, command, exit status, and output preview" do
-      error = ShellResolution.format_hook_error(
-        "after_create",
-        "/workspace/PRI-123",
-        {"command not found", 127},
-        {"sh", ["-lc", "git clone foo"]}
-      )
+      error =
+        ShellResolution.format_hook_error(
+          "after_create",
+          "/workspace/PRI-123",
+          {"command not found", 127},
+          {"sh", ["-lc", "git clone foo"]}
+        )
 
       assert error.hook_name == "after_create"
       assert error.workspace == "/workspace/PRI-123"

@@ -66,6 +66,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
     test "resolves execution strategy" do
       assert {:ok, state} = AcpxSession.init([])
       assert state.execution_strategy != nil
+
       assert match?({:direct, _}, state.execution_strategy) or
                match?({:shell, _, _}, state.execution_strategy) or
                match?({:node_js, _, _}, state.execution_strategy) or
@@ -85,7 +86,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
 
   describe "GenServer public API" do
     setup do
-      {:ok, pid} = GenServer.start(AcpxSession, [agent: "claude", cwd: "."])
+      {:ok, pid} = GenServer.start(AcpxSession, agent: "claude", cwd: ".")
 
       on_exit(fn ->
         if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5000)
@@ -299,18 +300,19 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
     end
 
     test "omits all optional flags when options are nil" do
-      args = build_global_args(%{
-        model: nil,
-        max_turns: nil,
-        allowed_tools: nil,
-        prompt_retries: nil,
-        system_prompt: nil,
-        system_prompt_append: nil,
-        timeout: nil,
-        ttl: nil,
-        suppress_reads: nil,
-        no_terminal: nil
-      })
+      args =
+        build_global_args(%{
+          model: nil,
+          max_turns: nil,
+          allowed_tools: nil,
+          prompt_retries: nil,
+          system_prompt: nil,
+          system_prompt_append: nil,
+          timeout: nil,
+          ttl: nil,
+          suppress_reads: nil,
+          no_terminal: nil
+        })
 
       refute "--model" in args
       refute "--max-turns" in args
@@ -329,7 +331,8 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
     test "builds correct argument sequence" do
       args = build_sessions_ensure_args("claude", "my-session", %{})
 
-      assert Enum.chunk_every(args, 2, 1) |> Enum.any?(fn [k, v] ->
+      assert Enum.chunk_every(args, 2, 1)
+             |> Enum.any?(fn [k, v] ->
                k == "--name" and v == "my-session"
              end)
 
@@ -830,9 +833,15 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
 
       json_line ->
         case Jason.decode(json_line) do
-          {:ok, %{"acpxRecordId" => id}} -> id
-          {:ok, %{"result" => %{"acpxRecordId" => id}}} -> id
-          {:ok, %{"result" => %{"acpxSessionId" => id}}} -> id
+          {:ok, %{"acpxRecordId" => id}} ->
+            id
+
+          {:ok, %{"result" => %{"acpxRecordId" => id}}} ->
+            id
+
+          {:ok, %{"result" => %{"acpxSessionId" => id}}} ->
+            id
+
           _ ->
             output |> String.trim() |> String.split("\n") |> List.first() |> String.trim()
         end

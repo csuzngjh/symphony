@@ -6,6 +6,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
   describe "resolve_strategy/3" do
     test "ACPX_COMMAND env var overrides everything" do
       original = System.get_env("ACPX_COMMAND")
+
       try do
         System.put_env("ACPX_COMMAND", "/usr/local/bin/acpx")
         file_resolver = fn _ -> true end
@@ -20,9 +21,15 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
 
     test "POSIX returns direct when acpx is real executable" do
       original_os = Application.get_env(:symphony_elixir, :os_type)
+
       try do
         Application.put_env(:symphony_elixir, :os_type, :unix)
-        exe_resolver = fn "acpx" -> "/usr/local/bin/acpx"; _ -> nil end
+
+        exe_resolver = fn
+          "acpx" -> "/usr/local/bin/acpx"
+          _ -> nil
+        end
+
         file_resolver = fn _ -> true end
         npm_resolver = fn -> {"", 1} end
 
@@ -34,14 +41,17 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
 
     test "Windows with .ps1 shim falls back to shell acpx command" do
       original_os = Application.get_env(:symphony_elixir, :os_type)
+
       try do
         Application.put_env(:symphony_elixir, :os_type, :windows)
+
         exe_resolver = fn
           "acpx" -> "C:\\Users\\test\\npm\\acpx.ps1"
           "cmd" -> "C:\\Windows\\System32\\cmd.exe"
           "node" -> "C:\\Program Files\\nodejs\\node.exe"
           _ -> nil
         end
+
         file_resolver = fn path -> String.contains?(path, "cli.js") end
         npm_resolver = fn -> {"C:\\Users\\test\\npm", 0} end
 
@@ -54,10 +64,20 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
 
     test "ACPX_JS_PATH env var with .js file uses node_js" do
       original = System.get_env("ACPX_JS_PATH")
+
       try do
         System.put_env("ACPX_JS_PATH", "/opt/acpx/dist/cli.js")
-        exe_resolver = fn "node" -> "/usr/bin/node"; _ -> nil end
-        file_resolver = fn "/opt/acpx/dist/cli.js" -> true; _ -> false end
+
+        exe_resolver = fn
+          "node" -> "/usr/bin/node"
+          _ -> nil
+        end
+
+        file_resolver = fn
+          "/opt/acpx/dist/cli.js" -> true
+          _ -> false
+        end
+
         npm_resolver = fn -> {"", 1} end
 
         assert {:node_js, "/usr/bin/node", "/opt/acpx/dist/cli.js"} = AcpxCli.resolve_strategy(file_resolver, exe_resolver, npm_resolver)
@@ -68,6 +88,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
 
     test "ACPX_JS_PATH with non-.js file is rejected" do
       original = System.get_env("ACPX_JS_PATH")
+
       try do
         System.put_env("ACPX_JS_PATH", "/opt/acpx/dist/cli.ps1")
         exe_resolver = fn _ -> nil end
@@ -82,6 +103,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
 
     test "returns error when nothing is found" do
       original_os = Application.get_env(:symphony_elixir, :os_type)
+
       try do
         Application.put_env(:symphony_elixir, :os_type, :windows)
         exe_resolver = fn _ -> nil end
@@ -97,12 +119,15 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
 
     test "npm global prefix resolves cli.js" do
       original_os = Application.get_env(:symphony_elixir, :os_type)
+
       try do
         Application.put_env(:symphony_elixir, :os_type, :windows)
+
         exe_resolver = fn
           "node" -> "C:\\nodejs\\node.exe"
           _ -> nil
         end
+
         file_resolver = fn path -> String.ends_with?(path, "cli.js") end
         npm_resolver = fn -> {"C:\\Users\\test\\npm", 0} end
 

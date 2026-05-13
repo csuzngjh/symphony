@@ -32,7 +32,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxCli do
 
   @type file_exists_resolver :: (String.t() -> boolean())
   @type executable_resolver :: (String.t() -> String.t() | nil)
-  @type npm_prefix_resolver :: ({String.t(), integer()} | {:error, term()})
+  @type npm_prefix_resolver :: {String.t(), integer()} | {:error, term()}
 
   @spec resolve_strategy(
           file_exists_resolver(),

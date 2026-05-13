@@ -212,7 +212,8 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     end
   end
 
-  def handle_info({:DOWN, _ref, :port, _port, _reason}, state) do
+  def handle_info({:DOWN, _ref, :port, port, reason}, state) do
+    Logger.debug("Port #{inspect(port)} down after cleanup: #{inspect(reason)}")
     {:noreply, state}
   end
 
