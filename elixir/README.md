@@ -1,221 +1,158 @@
-# Symphony Elixir
+<!--
+  SPDX-License-Identifier: Apache-2.0
+  SPDX-FileCopyrightText: 2021 The Elixir Team
+  SPDX-FileCopyrightText: 2012 Plataformatec
+-->
 
-This directory contains the current Elixir/OTP implementation of Symphony, based on
-[`SPEC.md`](../SPEC.md) at the repository root.
+<h1>
+ <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/elixir-lang/elixir-lang.github.com/raw/main/images/logo/logo-dark.png">
+  <img alt="Elixir logo" src="https://github.com/elixir-lang/elixir-lang.github.com/raw/main/images/logo/logo.png" width="200">
+ </picture>
+</h1>
 
-> [!WARNING]
-> Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
-> We recommend implementing your own hardened version based on `SPEC.md`.
+[![CI](https://github.com/elixir-lang/elixir/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/elixir-lang/elixir/actions/workflows/ci.yml?query=branch%3Amain)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10187/badge)](https://www.bestpractices.dev/projects/10187)
 
-## Screenshot
+Elixir is a dynamic, functional language designed for building scalable
+and maintainable applications.
 
-![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
+For more about Elixir, installation and documentation,
+[check Elixir's website](https://elixir-lang.org/).
 
-## How it works
+## Policies
 
-1. Polls Linear for candidate work
-2. Creates a workspace per issue
-3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
+New releases are announced in the [announcement mailing list][8].
+You can subscribe by sending an email to <elixir-lang-ann+subscribe@googlegroups.com>
+and replying to the confirmation email.
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+All security releases [will be tagged with `[security]`][10]. For more
+information, please read our [Security Policy][9].
 
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+All interactions in our official communication channels follow our
+[Code of Conduct][1].
 
-## How to use it
+All contributions are required to conform to our [Open Source Policy][11].
 
-1. Make sure your codebase is set up to work well with agents: see
-   [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
-3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
-5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
-6. Follow the instructions below to install the required runtime dependencies and start the service.
+## Bug reports
 
-## Prerequisites
+For reporting bugs, [visit our issue tracker][2] and follow the steps
+for reporting a new issue. **Please disclose security vulnerabilities
+privately [in our Security page](https://github.com/elixir-lang/elixir/security)**.
 
-We recommend using [mise](https://mise.jdx.dev/) to manage Elixir/Erlang versions.
+All currently open bugs related to Elixir are listed in the issues tracker.
+The Elixir team uses the issues tracker to focus on *actionable items*,
+including planned enhancements in the short and medium term. We also do
+our best to label entries for clarity and to ease collaboration.
 
-```bash
-mise install
-mise exec -- elixir --version
-```
+Our *actionable item policy* has some important consequences, such as:
 
-## Run
+  * Proposing new features as well as requests for support, help, and
+    guidance must be done in their own spaces, detailed next.
 
-```bash
-git clone https://github.com/openai/symphony
-cd symphony/elixir
-mise trust
-mise install
-mise exec -- mix setup
-mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
-```
+  * Issues we have identified to be outside of Elixir's scope,
+    such as an upstream bug, will be closed (and requested to be moved
+    elsewhere if appropriate).
 
-## Configuration
+  * We actively close unrelated and non-actionable issues to keep the
+    issues tracker tidy. If you believe we got something wrong, drop a
+    comment and we can always reopen the issue.
 
-Pass a custom workflow file path to `./bin/symphony` when starting the service:
+By keeping the overall issues tracker tidy and organized, the community
+can easily peak at what is coming in new releases and also get involved
+by commenting on existing issues and submitting pull requests. Please
+remember to keep the tone positive and be kind! For more information,
+see the [Code of Conduct][1].
 
-```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
-```
+## Discussions, support, and help
 
-If no path is passed, Symphony defaults to `./WORKFLOW.md`.
+For general discussions, support, and help, please use the community
+spaces [listed on the sidebar of the Elixir website](https://elixir-lang.org/),
+such as forums, chat platforms, etc, where the wider community will be available
+to help you.
 
-Optional flags:
+## Proposing new features
 
-- `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
-- `--port` also starts the Phoenix observability service (default: disabled)
+We encourage you to first propose new features in the community spaces
+listed above. These discussions help refine ideas and gather feedback before
+submission. Our website also includes [a general outline of the language
+history and its current development focus](https://elixir-lang.org/development.html).
 
-The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Codex session prompt.
+Once you are ready, you can submit your proposal to the [Elixir Core
+mailing list][3], either through the web interface or by subscribing to
+it at <elixir-lang-core+subscribe@googlegroups.com>. Remember to include
+a clear problem description, compare the proposed solution to existing
+alternatives in the Elixir ecosystem (and in other languages if possible),
+and consider the potential impact your changes will have on the codebase and
+community.
 
-Minimal example:
+Once a proposal is accepted, it will be added to [the issue tracker][2].
+Features and bug fixes that have already been merged and will be included
+in the next release are then "closed" and added to the [changelog][7]
+before release.
 
-```md
----
-tracker:
-  kind: linear
-  project_slug: "..."
-workspace:
-  root: ~/code/workspaces
-hooks:
-  after_create: |
-    git clone git@github.com:your-org/your-repo.git .
-agent:
-  max_concurrent_agents: 10
-  max_turns: 20
-codex:
-  command: codex app-server
----
+## Compiling from source
 
-You are working on a Linear issue {{ issue.identifier }}.
+For the many different ways to install Elixir,
+[see our installation instructions on the website](https://elixir-lang.org/install.html).
+However, if you want to contribute to Elixir, you will need to compile from source.
 
-Title: {{ issue.title }} Body: {{ issue.description }}
-```
+First, [install Erlang](https://elixir-lang.org/install.html#installing-erlang).
+After that, clone this repository to your machine, compile and test it:
 
-Notes:
-
-- If a value is missing, defaults are used.
-- Safer Codex defaults are used when policy fields are omitted:
-  - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
-  - `codex.thread_sandbox` defaults to `workspace-write`
-  - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
-- Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
-- Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
-- When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
-  unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
-  Symphony validation.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
-  invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-- If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
-  identifier, title, and body.
-- Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
-- If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
-  the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
-- For path values, `~` is expanded to the home directory.
-- For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
-  while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
-  launched shell.
-
-```yaml
-tracker:
-  api_key: $LINEAR_API_KEY
-workspace:
-  root: $SYMPHONY_WORKSPACE_ROOT
-hooks:
-  after_create: |
-    git clone --depth 1 "$SOURCE_REPO_URL" .
-codex:
-  command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
-```
-
-- If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
-- If a later reload fails, Symphony keeps running with the last known good workflow and logs the
-  reload error until the file is fixed.
-- `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
-  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
-
-## Web dashboard
-
-The observability UI now runs on a minimal Phoenix stack:
-
-- LiveView for the dashboard at `/`
-- JSON API for operational debugging under `/api/v1/*`
-- Bandit as the HTTP server
-- Phoenix dependency static assets for the LiveView client bootstrap
-
-## Project Layout
-
-- `lib/`: application code and Mix tasks
-- `test/`: ExUnit coverage for runtime behavior
-- `WORKFLOW.md`: in-repo workflow contract used by local runs
-- `../.codex/`: repository-local Codex skills and setup helpers
-
-## Testing
-
-```bash
-make all
-```
-
-Run the real external end-to-end test only when you want Symphony to create disposable Linear
-resources and launch a real `codex app-server` session:
-
-```bash
+```sh
+git clone https://github.com/elixir-lang/elixir.git
 cd elixir
-export LINEAR_API_KEY=...
-make e2e
+make
 ```
 
-Optional environment variables:
+> Note: if you are running on Windows,
+[this article includes important notes for compiling Elixir from source
+on Windows](https://github.com/elixir-lang/elixir/wiki/Windows).
 
-- `SYMPHONY_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E`
-- `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
+In case you want to use this Elixir version as your system version,
+you need to add the `bin` directory to [your PATH environment variable](https://elixir-lang.org/install.html#setting-path-environment-variable).
 
-`make e2e` runs two live scenarios:
-- one with a local worker
-- one with SSH workers
+When updating the repository, you may want to run `make clean` before
+recompiling. For deterministic builds, you should set the environment
+variable `ERL_COMPILER_OPTIONS=deterministic`.
 
-If `SYMPHONY_LIVE_SSH_WORKER_HOSTS` is unset, the SSH scenario uses `docker compose` to start two
-disposable SSH workers on `localhost:<port>`. The live test generates a temporary SSH keypair,
-mounts the host `~/.codex/auth.json` into each worker, verifies that Symphony can talk to them
-over real SSH, then runs the same orchestration flow against those worker addresses. This keeps
-the transport representative without depending on long-lived external machines.
+## Contributing
 
-Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
+Contributions to Elixir are always welcome! Before you get started, please check
+out our [CONTRIBUTING.md](CONTRIBUTING.md) file. There you will find detailed
+guidelines on how to set up your environment, run the test suite, format your
+code, and submit pull requests. We also include information on our review
+process, licensing requirements, and helpful tips to ensure a smooth
+contribution experience.
 
-The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
-a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
-Linear issue, then marks the project completed so the run remains visible in Linear.
+## Development links
 
-## FAQ
+  * [Elixir Documentation][6]
+  * [Elixir Core Mailing list (development)][3]
+  * [Announcement mailing list][8]
+  * [Code of Conduct][1]
+  * [Issue tracker][2]
+  * [Changelog][7]
+  * [Security Policy][9]
+  * **[#elixir][4]** on [Libera.Chat][5] IRC
 
-### Why Elixir?
-
-Elixir is built on Erlang/BEAM/OTP, which is great for supervising long-running processes. It has an
-active ecosystem of tools and libraries. It also supports hot code reloading without stopping
-actively running subagents, which is very useful during development.
-
-### What's the easiest way to set this up for my own codebase?
-
-Launch `codex` in your repo, give it the URL to the Symphony repo, and ask it to set things up for
-you.
+  [1]: CODE_OF_CONDUCT.md
+  [2]: https://github.com/elixir-lang/elixir/issues
+  [3]: https://groups.google.com/group/elixir-lang-core
+  [4]: https://web.libera.chat/#elixir
+  [5]: https://libera.chat
+  [6]: https://elixir-lang.org/docs.html
+  [7]: CHANGELOG.md
+  [8]: https://groups.google.com/group/elixir-lang-ann
+  [9]: SECURITY.md
+  [10]: https://groups.google.com/forum/#!searchin/elixir-lang-ann/%5Bsecurity%5D%7Csort:date
+  [11]: OPEN_SOURCE_POLICY.md
 
 ## License
 
-This project is licensed under the [Apache License 2.0](../LICENSE).
+"Elixir" and the Elixir logo are registered trademarks of The Elixir Team.
+
+Elixir source code is released under Apache License 2.0.
+
+Check [LICENSE](LICENSE) file for more information.

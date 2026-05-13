@@ -3,7 +3,9 @@ defmodule SymphonyElixir.CLI do
   Escript entrypoint for running Symphony with an explicit WORKFLOW.md path.
   """
 
+  require Logger
   alias SymphonyElixir.LogFile
+  alias SymphonyElixir.AgentRunner.AcpxCli
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer]
@@ -36,6 +38,7 @@ defmodule SymphonyElixir.CLI do
         with :ok <- require_guardrails_acknowledgement(opts),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
+          log_startup_info(Keyword.put(opts, :workflow_path, Path.expand("WORKFLOW.md")))
           run(Path.expand("WORKFLOW.md"), deps)
         end
 
@@ -43,6 +46,7 @@ defmodule SymphonyElixir.CLI do
         with :ok <- require_guardrails_acknowledgement(opts),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
+          log_startup_info(Keyword.put(opts, :workflow_path, workflow_path))
           run(workflow_path, deps)
         end
 
@@ -167,6 +171,23 @@ defmodule SymphonyElixir.CLI do
   defp set_server_port_override(port) when is_integer(port) and port >= 0 do
     Application.put_env(:symphony_elixir, :server_port_override, port)
     :ok
+  end
+
+  defp log_startup_info(opts) do
+    workflow_path = Keyword.get(opts, :workflow_path, "unknown")
+    port = Keyword.get(opts, :port, 4000)
+    logs_root = Keyword.get(opts, :logs_root, "default")
+    workspace_root = Keyword.get(opts, :workspace_root, "default")
+
+    strategy = AcpxCli.resolve_strategy()
+    strategy_label = AcpxCli.strategy_label(strategy)
+
+    Logger.info("Symphony startup:")
+    Logger.info("  Workflow:   #{workflow_path}")
+    Logger.info("  Port:       #{port}")
+    Logger.info("  Logs root:  #{logs_root}")
+    Logger.info("  Workspace:  #{workspace_root}")
+    Logger.info("  ACPX:       #{strategy_label}")
   end
 
   @spec wait_for_shutdown() :: no_return()

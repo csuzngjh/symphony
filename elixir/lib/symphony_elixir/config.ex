@@ -114,6 +114,28 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @type acpx_agent_options :: %{
+          optional(:model) => String.t(),
+          optional(:max_turns) => pos_integer(),
+          optional(:allowed_tools) => [String.t()],
+          optional(:prompt_retries) => non_neg_integer(),
+          optional(:system_prompt_append) => String.t(),
+          optional(:approve_all) => boolean()
+        }
+
+  @spec acpx_agent_options() :: acpx_agent_options()
+  def acpx_agent_options do
+    config = settings!()
+    agent_config = config.agent
+
+    %{
+      model: agent_config.model,
+      max_turns: agent_config.max_turns,
+      allowed_tools: agent_config.allowed_tools,
+      prompt_retries: agent_config.prompt_retries
+    }
+  end
+
   defp validate_semantics(settings) do
     cond do
       is_nil(settings.tracker.kind) ->

@@ -50,6 +50,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:api_key, :string)
       field(:project_slug, :string)
       field(:assignee, :string)
+      field(:issue_identifiers, {:array, :string}, default: [])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -59,10 +60,21 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :assignee, :issue_identifiers, :active_states, :terminal_states],
         empty_values: []
       )
+      |> update_change(:issue_identifiers, &normalize_issue_identifiers/1)
     end
+
+    defp normalize_issue_identifiers(issue_identifiers) when is_list(issue_identifiers) do
+      issue_identifiers
+      |> Enum.map(&to_string/1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+    end
+
+    defp normalize_issue_identifiers(_issue_identifiers), do: []
   end
 
   defmodule Polling do
@@ -131,7 +143,11 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_concurrent_agents, :integer, default: 10)
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
+      field(:continuation_retry_delay_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:model, :string)
+      field(:allowed_tools, {:array, :string})
+      field(:prompt_retries, :integer, default: 0)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -139,12 +155,26 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :continuation_retry_delay_ms,
+          :max_concurrent_agents_by_state,
+          :model,
+          :allowed_tools,
+          :prompt_retries
+        ],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
-      |> validate_number(:max_turns, greater_than: 0)
+      |> validate_number(:max_turns, greater_than_or_equal_to: -1)
+      |> validate_change(:max_turns, fn :max_turns, value ->
+        if value == -1 or value > 0, do: [], else: [max_turns: "must be -1 (unlimited) or greater than 0"]
+      end)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
+      |> validate_number(:continuation_retry_delay_ms, greater_than: 0)
+      |> validate_number(:prompt_retries, greater_than_or_equal_to: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
     end
@@ -157,7 +187,8 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:command, :string, default: "codex app-server")
+      field(:command, :string, default: "claude")
+      field(:agent, :string, default: "claude")
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -183,6 +214,7 @@ defmodule SymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
+          :agent,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,

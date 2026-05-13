@@ -1,0 +1,42 @@
+---
+tracker:
+  kind: linear
+  api_key: "$LINEAR_API_KEY"
+  endpoint: "https://api.linear.app/graphql"
+  project_slug: "d4fdb8223f27"
+  issue_identifiers:
+    - PRI-117
+    - PRI-127
+  active_states:
+    - Todo
+    - In Progress
+  terminal_states:
+    - Closed
+    - Cancelled
+    - Canceled
+    - Duplicate
+    - Done
+polling:
+  interval_ms: 5000
+workspace:
+  root: D:/code/principles-workspaces
+hooks:
+  after_create: |
+    git clone --depth 1 https://github.com/csuzngjh/principles .
+    npm install
+  before_remove: |
+    echo "Cleaning up workspace before removal"
+agent:
+  max_concurrent_agents: 2
+  max_turns: -1
+  continuation_retry_delay_ms: 300000
+  model: sonnet
+codex:
+  agent: "claude"
+  command: claude
+  turn_timeout_ms: 600000
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+---

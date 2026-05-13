@@ -99,33 +99,37 @@ defmodule SymphonyElixir.SpecsCheck do
   defp consume_form({:@, _, _}, state, _module_name, _file, _exemptions), do: state
 
   defp consume_form({:def, meta, [head_ast, _]} = _form, state, module_name, file, exemptions) do
-    {name, arity} = def_head_to_identifier(head_ast)
+    case def_head_to_identifier(head_ast) do
+      nil ->
+        %{state | pending_specs: MapSet.new(), pending_impl: false}
 
-    id = {name, arity}
+      {name, arity} ->
+        id = {name, arity}
 
-    if MapSet.member?(state.seen_defs, id) do
-      %{state | pending_specs: MapSet.new(), pending_impl: false}
-    else
-      finding = %{
-        file: file,
-        module: module_name,
-        name: name,
-        arity: arity,
-        line: Keyword.get(meta, :line, 1)
-      }
+        if MapSet.member?(state.seen_defs, id) do
+          %{state | pending_specs: MapSet.new(), pending_impl: false}
+        else
+          finding = %{
+            file: file,
+            module: module_name,
+            name: name,
+            arity: arity,
+            line: Keyword.get(meta, :line, 1)
+          }
 
-      next_state = %{
-        state
-        | pending_specs: MapSet.new(),
-          pending_impl: false,
-          seen_defs: MapSet.put(state.seen_defs, id)
-      }
+          next_state = %{
+            state
+            | pending_specs: MapSet.new(),
+              pending_impl: false,
+              seen_defs: MapSet.put(state.seen_defs, id)
+          }
 
-      if compliant?(finding, state, exemptions) do
-        next_state
-      else
-        %{next_state | findings: [finding | next_state.findings]}
-      end
+          if compliant?(finding, state, exemptions) do
+            next_state
+          else
+            %{next_state | findings: [finding | next_state.findings]}
+          end
+        end
     end
   end
 
@@ -167,9 +171,12 @@ defmodule SymphonyElixir.SpecsCheck do
   defp spec_head_to_identifier({:when, _, [inner | _guards]}), do: spec_head_to_identifier(inner)
   defp spec_head_to_identifier({name, _, args}) when is_atom(name) and is_list(args), do: {name, length(args)}
   defp spec_head_to_identifier({name, _, nil}) when is_atom(name), do: {name, 0}
+  defp spec_head_to_identifier({name, meta, args}) when is_tuple(name) or is_list(meta) or is_list(args), do: nil
   defp spec_head_to_identifier(_), do: nil
 
   defp def_head_to_identifier({:when, _, [head | _guards]}), do: def_head_to_identifier(head)
   defp def_head_to_identifier({name, _, args}) when is_atom(name) and is_list(args), do: {name, length(args)}
   defp def_head_to_identifier({name, _, nil}) when is_atom(name), do: {name, 0}
+  defp def_head_to_identifier({name, meta, args}) when is_tuple(name) or is_list(meta) or is_list(args), do: nil
+  defp def_head_to_identifier(_), do: nil
 end
