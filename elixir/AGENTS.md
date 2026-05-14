@@ -6,7 +6,8 @@ This directory contains the Elixir agent orchestration service that polls Linear
 
 - Elixir: `1.19.x` (OTP 28) via `mise`.
 - Install deps: `mix setup`.
-- Main quality gate: `make all` (format check, lint, coverage, dialyzer).
+- Main quality gate: `make -f Makefile.symphony all` (format check, lint, test, dialyzer).
+  - On Windows use: `mingw32-make -f Makefile.symphony all` or run mix commands directly.
 
 
 ## Codebase-Specific Conventions
@@ -29,7 +30,7 @@ This directory contains the Elixir agent orchestration service that polls Linear
 Run targeted tests while iterating, then run full gates before handoff.
 
 ```bash
-make all
+make -f Makefile.symphony all
 ```
 
 ## Required Rules

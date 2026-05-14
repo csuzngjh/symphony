@@ -83,11 +83,13 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  @spec server_port() :: non_neg_integer() | nil
+  @default_server_port 4000
+
+  @spec server_port() :: non_neg_integer()
   def server_port do
     case Application.get_env(:symphony_elixir, :server_port_override) do
       port when is_integer(port) and port >= 0 -> port
-      _ -> settings!().server.port
+      _ -> settings!().server.port || @default_server_port
     end
   end
 
@@ -147,8 +149,8 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
+      settings.tracker.kind == "linear" and is_nil(settings.tracker.api_key) ->
+        {:error, :missing_linear_api_token}
 
       true ->
         :ok

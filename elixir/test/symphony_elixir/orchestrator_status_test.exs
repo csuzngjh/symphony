@@ -96,7 +96,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert snapshot_entry.last_codex_message == %{
              event: :notification,
-             message: %{method: "some-event"},
+             message: Jason.encode!(%{method: "some-event"}),
              timestamp: now
            }
   end
@@ -981,6 +981,18 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard renders linear project link in header" do
+    previous_port_override = Application.get_env(:symphony_elixir, :server_port_override)
+
+    on_exit(fn ->
+      if is_nil(previous_port_override) do
+        Application.delete_env(:symphony_elixir, :server_port_override)
+      else
+        Application.put_env(:symphony_elixir, :server_port_override, previous_port_override)
+      end
+    end)
+
+    Application.delete_env(:symphony_elixir, :server_port_override)
+
     snapshot_data =
       {:ok,
        %{
@@ -993,7 +1005,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
 
     assert rendered =~ "https://linear.app/project/project/issues"
-    refute rendered =~ "Dashboard:"
+    assert rendered =~ "Dashboard:"
   end
 
   test "status dashboard renders dashboard url on its own line when server port is configured" do

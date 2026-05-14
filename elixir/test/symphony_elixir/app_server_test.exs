@@ -1,6 +1,9 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  @unix match?({:unix, _}, :os.type())
+
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -39,6 +42,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server rejects symlink escape cwd paths under the workspace root" do
     test_root =
       Path.join(
@@ -53,7 +57,11 @@ defmodule SymphonyElixir.AppServerTest do
 
       File.mkdir_p!(workspace_root)
       File.mkdir_p!(outside_workspace)
-      File.ln_s!(outside_workspace, symlink_workspace)
+      unless symlink_supported?() do
+        assert true
+      else
+        File.ln_s!(outside_workspace, symlink_workspace)
+      end
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root
@@ -76,6 +84,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server passes explicit turn sandbox policies through unchanged" do
     test_root =
       Path.join(
@@ -183,6 +192,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server marks request-for-input events as a hard failure" do
     test_root =
       Path.join(
@@ -262,6 +272,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server fails when command execution approval is required under safer defaults" do
     test_root =
       Path.join(
@@ -325,6 +336,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server auto-approves command execution approval requests when approval policy is never" do
     test_root =
       Path.join(
@@ -462,6 +474,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server auto-approves MCP tool approval prompts when approval policy is never" do
     test_root =
       Path.join(
@@ -561,6 +574,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server sends a generic non-interactive answer for freeform tool input prompts" do
     test_root =
       Path.join(
@@ -637,6 +651,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server sends a generic non-interactive answer for option-based tool input prompts" do
     test_root =
       Path.join(
@@ -737,6 +752,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server rejects unsupported dynamic tool calls without stalling" do
     test_root =
       Path.join(
@@ -838,6 +854,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server executes supported dynamic tool calls and returns the tool result" do
     test_root =
       Path.join(
@@ -960,6 +977,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server emits tool_call_failed for supported tool failures" do
     test_root =
       Path.join(
@@ -1066,6 +1084,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server buffers partial JSON lines until newline terminator" do
     test_root =
       Path.join(
@@ -1130,6 +1149,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server captures codex side output and logs it through Logger" do
     test_root =
       Path.join(
@@ -1205,6 +1225,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server emits malformed events for JSON-like protocol lines that fail to decode" do
     test_root =
       Path.join(
@@ -1276,6 +1297,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "AppServer integration tests require Unix shell on Windows")
   test "app server launches over ssh for remote workers" do
     test_root =
       Path.join(

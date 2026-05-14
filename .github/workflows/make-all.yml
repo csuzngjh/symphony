@@ -8,7 +8,12 @@ on:
 
 jobs:
   make-all:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: elixir
@@ -34,5 +39,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-
 
-      - name: Verify make all
-        run: make all
+      - name: Verify quality gates (Unix)
+        if: runner.os != 'Windows'
+        run: make -f Makefile.symphony all
+
+      - name: Verify quality gates (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: mix do format --check-formatted, specs.check, credo --strict, test

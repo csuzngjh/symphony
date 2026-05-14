@@ -90,11 +90,18 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
   @spec init(keyword()) :: {:ok, state()}
   def init(opts) do
-    strategy = AcpxCli.resolve_strategy()
+    strategy =
+      try do
+        AcpxCli.resolve_strategy()
+      rescue
+        _ -> {:error, "ACPX CLI resolution failed: npm or acpx not found"}
+      catch
+        _, _ -> {:error, "ACPX CLI resolution failed: npm or acpx not found"}
+      end
 
     case strategy do
       {:error, msg} ->
-        Logger.error("ACPX CLI resolution failed: #{msg}")
+        Logger.warning("ACPX CLI resolution: #{msg}")
 
       _ ->
         Logger.info("ACPX execution strategy: #{AcpxCli.strategy_label(strategy)}")
@@ -749,9 +756,13 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
   defp agent_subcommand(agent) when agent in @builtin_agents, do: agent
   defp agent_subcommand(agent) when is_binary(agent), do: agent
 
-  defp cleanup_port(port, os_pid) do
-    if is_integer(os_pid) and os_pid > 0 do
-      ProcessKiller.kill_tree(os_pid)
+  defp cleanup_port(port, _os_pid) do
+    # Use Process.delete to ensure idempotency: if this os_pid was already
+    # cleaned up (e.g. via a concurrent timeout path), skip the kill.
+    stored_os_pid = Process.delete(:symphony_os_pid)
+
+    if is_integer(stored_os_pid) and stored_os_pid > 0 do
+      ProcessKiller.kill_tree(stored_os_pid)
     end
 
     close_port(port)

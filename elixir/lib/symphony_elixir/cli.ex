@@ -23,10 +23,11 @@ defmodule SymphonyElixir.CLI do
   def main(args) do
     case evaluate(args) do
       :ok ->
+        IO.puts("Symphony started successfully")
         wait_for_shutdown()
 
       {:error, message} ->
-        IO.puts(:stderr, message)
+        IO.puts(:stderr, "Symphony startup failed: #{message}")
         System.halt(1)
     end
   end
@@ -63,7 +64,9 @@ defmodule SymphonyElixir.CLI do
       :ok = deps.set_workflow_file_path.(expanded_path)
 
       case deps.ensure_all_started.() do
-        {:ok, _started_apps} ->
+        {:ok, started_apps} ->
+          IO.puts("Applications started: #{inspect(started_apps)}")
+          print_dashboard_url()
           :ok
 
         {:error, reason} ->
@@ -72,6 +75,12 @@ defmodule SymphonyElixir.CLI do
     else
       {:error, "Workflow file not found: #{expanded_path}"}
     end
+  end
+
+  defp print_dashboard_url do
+    port = Application.get_env(:symphony_elixir, :server_port_override) || 4000
+    IO.puts("Dashboard: http://127.0.0.1:#{port}/")
+    IO.puts("API state: http://127.0.0.1:#{port}/api/v1/state")
   end
 
   @spec usage_message() :: String.t()
@@ -179,8 +188,15 @@ defmodule SymphonyElixir.CLI do
     logs_root = Keyword.get(opts, :logs_root, "default")
     workspace_root = Keyword.get(opts, :workspace_root, "default")
 
-    strategy = AcpxCli.resolve_strategy()
-    strategy_label = AcpxCli.strategy_label(strategy)
+    strategy_label =
+      try do
+        strategy = AcpxCli.resolve_strategy()
+        AcpxCli.strategy_label(strategy)
+      rescue
+        _ -> "unknown (detection failed)"
+      catch
+        _, _ -> "unknown (detection failed)"
+      end
 
     Logger.info("Symphony startup:")
     Logger.info("  Workflow:   #{workflow_path}")
@@ -198,13 +214,16 @@ defmodule SymphonyElixir.CLI do
         System.halt(1)
 
       pid ->
+        IO.puts("Symphony supervisor running pid=#{inspect(pid)}")
         ref = Process.monitor(pid)
 
         receive do
           {:DOWN, ^ref, :process, ^pid, reason} ->
             case reason do
               :normal -> System.halt(0)
-              _ -> System.halt(1)
+              _ ->
+                IO.puts(:stderr, "Symphony supervisor exited: #{inspect(reason)}")
+                System.halt(1)
             end
         end
     end

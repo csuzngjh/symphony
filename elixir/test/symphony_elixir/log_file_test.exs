@@ -8,6 +8,7 @@ defmodule SymphonyElixir.LogFileTest do
   end
 
   test "default_log_file/1 builds the log path under a custom root" do
-    assert LogFile.default_log_file("/tmp/symphony-logs") == "/tmp/symphony-logs/log/symphony.log"
+    root = Path.join(System.tmp_dir!(), "symphony-logs")
+    assert LogFile.default_log_file(root) == Path.join(root, "log/symphony.log")
   end
 end

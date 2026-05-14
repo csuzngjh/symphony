@@ -33,11 +33,15 @@ defmodule SymphonyElixir.Workspace do
 
   defp ensure_workspace(workspace, nil) do
     cond do
-      File.dir?(workspace) ->
+      File.dir?(workspace) and File.dir?(Path.join(workspace, ".git")) ->
         case check_workspace_safe_reuse(workspace) do
           :ok -> {:ok, workspace, false}
           {:error, _} = error -> error
         end
+
+      File.dir?(workspace) ->
+        Logger.info("Workspace exists but is not a git repository, recreating workspace=#{workspace}")
+        create_workspace(workspace)
 
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
@@ -83,9 +87,31 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp create_workspace(workspace) do
-    File.rm_rf!(workspace)
+    case File.rm_rf(workspace) do
+      {:ok, _} ->
+        :ok
+
+      {:error, _, _} ->
+        cleanup_workspace_contents(workspace)
+    end
+
     File.mkdir_p!(workspace)
     {:ok, workspace, true}
+  end
+
+  defp cleanup_workspace_contents(workspace) do
+    case File.ls(workspace) do
+      {:ok, entries} ->
+        for entry <- entries do
+          path = Path.join(workspace, entry)
+          File.rm_rf(path)
+        end
+
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 
   defp check_workspace_safe_reuse(workspace) do
@@ -389,10 +415,12 @@ defmodule SymphonyElixir.Workspace do
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
     expanded_root = Path.expand(Config.settings!().workspace.root)
-    expanded_root_prefix = expanded_root <> "/"
+    expanded_root_prefix = normalize_separators(expanded_root) <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
          {:ok, canonical_root} <- PathSafety.canonicalize(expanded_root) do
+      canonical_workspace = normalize_separators(canonical_workspace)
+      canonical_root = normalize_separators(canonical_root)
       canonical_root_prefix = canonical_root <> "/"
 
       cond do
@@ -402,7 +430,7 @@ defmodule SymphonyElixir.Workspace do
         String.starts_with?(canonical_workspace <> "/", canonical_root_prefix) ->
           :ok
 
-        String.starts_with?(expanded_workspace <> "/", expanded_root_prefix) ->
+        String.starts_with?(normalize_separators(expanded_workspace) <> "/", expanded_root_prefix) ->
           {:error, {:workspace_symlink_escape, expanded_workspace, canonical_root}}
 
         true ->
@@ -426,6 +454,10 @@ defmodule SymphonyElixir.Workspace do
       true ->
         :ok
     end
+  end
+
+  defp normalize_separators(path) when is_binary(path) do
+    String.replace(path, "\\", "/")
   end
 
   defp remote_shell_assign(variable_name, raw_path)

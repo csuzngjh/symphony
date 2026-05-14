@@ -1,6 +1,60 @@
 defmodule SymphonyElixir.TestSupport do
   @workflow_prompt "You are an agent for this repository."
 
+  def normalize_path_for_platform(path) when is_binary(path) do
+    path
+    |> String.replace("\\", "/")
+    |> String.downcase()
+  end
+
+  def symlink_supported? do
+    match?({:unix, _}, :os.type())
+  end
+
+  def read_text_normalized(path) do
+    path
+    |> File.read!()
+    |> String.replace("\r\n", "\n")
+  end
+
+  def posix_path(path) when is_binary(path) do
+    String.replace(path, "\\", "/")
+  end
+
+  def git_available? do
+    case System.cmd("git", ["--version"], stderr_to_stdout: true) do
+      {_, 0} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  @doc """
+  Cross-platform temporary path builder.
+  On all platforms, returns `#{System.tmp_dir!()}/<name>`.
+  """
+  def tmp_path(name) when is_binary(name) do
+    Path.join(System.tmp_dir!(), name)
+  end
+
+  @doc """
+  Returns `true` when running on Windows (`{:win32, _}`).
+  """
+  def windows? do
+    match?({:win32, _}, :os.type())
+  end
+
+  @doc """
+  Returns the remote shell command template suitable for the current platform
+  when targeting localhost (SSH tests).  On POSIX: "bash -lc <cmd>".
+  On Windows remote targets, the template can be overridden via
+  `Application.put_env(:symphony_elixir, :remote_shell_template, ...)`.
+  """
+  def remote_shell_template do
+    Application.get_env(:symphony_elixir, :remote_shell_template, "bash -lc %s")
+  end
+
   defmacro __using__(_opts) do
     quote do
       use ExUnit.Case
@@ -22,7 +76,20 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0,
+          normalize_path_for_platform: 1,
+          symlink_supported?: 0,
+          read_text_normalized: 1,
+          git_available?: 0,
+          posix_path: 1,
+          tmp_path: 1,
+          windows?: 0,
+          remote_shell_template: 0
+        ]
 
       setup do
         workflow_root =
@@ -208,7 +275,8 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp yaml_value(value) when is_binary(value) do
-    "\"" <> String.replace(value, "\"", "\\\"") <> "\""
+    escaped = value |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\"")
+    "\"" <> escaped <> "\""
   end
 
   defp yaml_value(value) when is_integer(value), do: to_string(value)

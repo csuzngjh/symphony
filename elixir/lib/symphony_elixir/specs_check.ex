@@ -33,9 +33,27 @@ defmodule SymphonyElixir.SpecsCheck do
         [path]
 
       File.dir?(path) ->
-        Path.wildcard(Path.join(path, "**/*.ex"))
+        list_elixir_files_recursive(path)
 
       true ->
+        []
+    end
+  end
+
+  defp list_elixir_files_recursive(dir) do
+    case File.ls(dir) do
+      {:ok, entries} ->
+        Enum.flat_map(entries, fn entry ->
+          path = Path.join(dir, entry)
+
+          cond do
+            File.dir?(path) -> list_elixir_files_recursive(path)
+            String.ends_with?(entry, ".ex") -> [path]
+            true -> []
+          end
+        end)
+
+      {:error, _} ->
         []
     end
   end
