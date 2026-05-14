@@ -19,10 +19,7 @@ workspace:
   root: D:/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/csuzngjh/principles .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
-    fi
+    git clone --depth 1 https://github.com/csuzngjh/principles . && cd elixir && (mise trust 2>&1 || echo mise unavailable, skipping) && (mise exec -- mix deps.get 2>&1 || echo deps.get skipped)
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:

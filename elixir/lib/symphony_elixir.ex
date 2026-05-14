@@ -25,6 +25,7 @@ defmodule SymphonyElixir.Application do
 
     Logger.info("SymphonyElixir.Application starting...")
 
+    :ok = SymphonyElixir.EnvSetup.ensure_full_path()
     :ok = SymphonyElixir.LogFile.configure()
     Logger.info("LogFile configured")
 

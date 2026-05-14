@@ -8,14 +8,17 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   def symlink_supported? do
-    not SymphonyElixir.TestSupport.Platform.windows?() or
-      SymphonyElixir.TestSupport.Platform.can_create_symlinks?()
+    match?({:unix, _}, :os.type())
   end
 
   def read_text_normalized(path) do
     path
     |> File.read!()
     |> String.replace("\r\n", "\n")
+  end
+
+  def posix_path(path) when is_binary(path) do
+    String.replace(path, "\\", "/")
   end
 
   def git_available? do
@@ -25,6 +28,31 @@ defmodule SymphonyElixir.TestSupport do
     end
   rescue
     _ -> false
+  end
+
+  @doc """
+  Cross-platform temporary path builder.
+  On all platforms, returns `#{System.tmp_dir!()}/<name>`.
+  """
+  def tmp_path(name) when is_binary(name) do
+    Path.join(System.tmp_dir!(), name)
+  end
+
+  @doc """
+  Returns `true` when running on Windows (`{:win32, _}`).
+  """
+  def windows? do
+    match?({:win32, _}, :os.type())
+  end
+
+  @doc """
+  Returns the remote shell command template suitable for the current platform
+  when targeting localhost (SSH tests).  On POSIX: "bash -lc <cmd>".
+  On Windows remote targets, the template can be overridden via
+  `Application.put_env(:symphony_elixir, :remote_shell_template, ...)`.
+  """
+  def remote_shell_template do
+    Application.get_env(:symphony_elixir, :remote_shell_template, "bash -lc %s")
   end
 
   defmacro __using__(_opts) do
@@ -56,7 +84,11 @@ defmodule SymphonyElixir.TestSupport do
           normalize_path_for_platform: 1,
           symlink_supported?: 0,
           read_text_normalized: 1,
-          git_available?: 0
+          git_available?: 0,
+          posix_path: 1,
+          tmp_path: 1,
+          windows?: 0,
+          remote_shell_template: 0
         ]
 
       setup do

@@ -33,11 +33,15 @@ defmodule SymphonyElixir.Workspace do
 
   defp ensure_workspace(workspace, nil) do
     cond do
-      File.dir?(workspace) ->
+      File.dir?(workspace) and File.dir?(Path.join(workspace, ".git")) ->
         case check_workspace_safe_reuse(workspace) do
           :ok -> {:ok, workspace, false}
           {:error, _} = error -> error
         end
+
+      File.dir?(workspace) ->
+        Logger.info("Workspace exists but is not a git repository, recreating workspace=#{workspace}")
+        create_workspace(workspace)
 
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
@@ -83,9 +87,31 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp create_workspace(workspace) do
-    File.rm_rf!(workspace)
+    case File.rm_rf(workspace) do
+      {:ok, _} ->
+        :ok
+
+      {:error, _, _} ->
+        cleanup_workspace_contents(workspace)
+    end
+
     File.mkdir_p!(workspace)
     {:ok, workspace, true}
+  end
+
+  defp cleanup_workspace_contents(workspace) do
+    case File.ls(workspace) do
+      {:ok, entries} ->
+        for entry <- entries do
+          path = Path.join(workspace, entry)
+          File.rm_rf(path)
+        end
+
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 
   defp check_workspace_safe_reuse(workspace) do

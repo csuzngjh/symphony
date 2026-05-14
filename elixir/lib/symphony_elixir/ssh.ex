@@ -28,7 +28,8 @@ defmodule SymphonyElixir.SSH do
 
   @spec remote_shell_command(String.t()) :: String.t()
   def remote_shell_command(command) when is_binary(command) do
-    "bash -lc " <> shell_escape(command)
+    template = Application.get_env(:symphony_elixir, :remote_shell_template, "bash -lc %s")
+    String.replace(template, "%s", shell_escape(command), global: false)
   end
 
   defp ssh_executable do

@@ -29,7 +29,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
         write_workflow_file!(Workflow.workflow_file_path(),
           workspace_root: workspace_root,
-          hook_after_create: "git clone --depth 1 #{template_repo} ."
+          hook_after_create: "git clone --depth 1 #{posix_path(template_repo)} ."
         )
 
         assert {:ok, workspace} = Workspace.create_for_issue("S-1")
@@ -137,11 +137,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
-  test "workspace rejects non-git existing directory" do
+  test "workspace recreates non-git existing directory" do
     test_root =
       Path.join(
         System.tmp_dir!(),
-        "symphony-elixir-workspace-non-git-reject-#{System.unique_integer([:positive])}"
+        "symphony-elixir-workspace-non-git-recreate-#{System.unique_integer([:positive])}"
       )
 
     try do
@@ -155,8 +155,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       File.write!(Path.join(workspace, "extra.txt"), "extra\n")
 
-      assert {:error, {:workspace_not_git, _path, _message}} =
-               Workspace.create_for_issue("MT-NOGIT")
+      assert {:ok, ^workspace} = Workspace.create_for_issue("MT-NOGIT")
+
+      refute File.exists?(Path.join(workspace, "extra.txt"))
     after
       File.rm_rf(test_root)
     end
@@ -282,7 +283,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: if(SymphonyElixir.TestSupport.Platform.windows?(), do: "pwsh -NoProfile -Command \"Write-Output nope; exit 17\"", else: "echo nope && exit 17")
+        hook_after_create: if(match?({:win32, _}, :os.type()), do: "pwsh -NoProfile -Command \"Write-Output nope; exit 17\"", else: "echo nope && exit 17")
       )
 
       assert {:error, {:workspace_hook_failed, "after_create", exit_code, _output}} =
@@ -1261,7 +1262,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "path safety returns errors for invalid path segments" do
-    if SymphonyElixir.TestSupport.Platform.windows?() do
+    if match?({:win32, _}, :os.type()) do
       IO.puts(:stderr, "SKIP: ENAMETOOLONG test - Windows path length limit differs from POSIX")
     else
       invalid_segment = String.duplicate("a", 300)
@@ -1333,7 +1334,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "remote workspace lifecycle uses ssh host aliases from worker config" do
-    if SymphonyElixir.TestSupport.Platform.windows?() do
+    if match?({:win32, _}, :os.type()) do
       IO.puts(:stderr, "SKIP: SSH remote workspace tests require bash (not available on Windows)")
     else
     test_root =
@@ -1357,9 +1358,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       File.mkdir_p!(test_root)
       System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
-      System.put_env("PATH", test_root <> (if SymphonyElixir.TestSupport.Platform.windows?(), do: ";", else: ":") <> (previous_path || ""))
+      System.put_env("PATH", test_root <> (if match?({:win32, _}, :os.type()), do: ";", else: ":") <> (previous_path || ""))
 
-      if SymphonyElixir.TestSupport.Platform.windows?() do
+      if match?({:win32, _}, :os.type()) do
         fake_ssh_bat = Path.join(test_root, "ssh.bat")
 
         File.write!(fake_ssh_bat, """

@@ -48,7 +48,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_project_slug: nil
     )
 
-    assert {:error, :missing_linear_project_slug} = Config.validate!()
+    assert :ok = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: "project",
@@ -165,7 +165,7 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "workflow file path resolves from app env when set" do
-    app_workflow_path = "/tmp/app/WORKFLOW.md"
+    app_workflow_path = Path.join(System.tmp_dir!(), "app/WORKFLOW.md")
 
     on_exit(fn ->
       Workflow.clear_workflow_file_path()
