@@ -692,11 +692,11 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
   defp send_update(recipient, issue_id, %{type: type, data: data} = _event) do
     adapted = adapt_acpx_event(type, data)
-    send(recipient, {:codex_worker_update, issue_id, adapted})
+    send(recipient, {:agent_worker_update, issue_id, adapted})
   end
 
   defp send_update(recipient, issue_id, event) do
-    send(recipient, {:codex_worker_update, issue_id, event})
+    send(recipient, {:agent_worker_update, issue_id, event})
   end
 
   defp adapt_acpx_event(:session_update, data) do

@@ -1,6 +1,9 @@
 defmodule SymphonyElixir.Codex.AppServer do
+  @deprecated "Use AcpxSession instead. The Codex AppServer backend is no longer the default."
   @moduledoc """
   Minimal client for the Codex app-server JSON-RPC 2.0 stream over stdio.
+
+  DEPRECATED: Use `AcpxSession` instead. The Codex AppServer backend is no longer the default.
   """
 
   require Logger
@@ -187,7 +190,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp start_port(workspace, nil) do
-    command = Config.settings!().codex.command
+    command = Config.settings!().agent.command
     {shell_exec, shell_args} = ShellResolution.resolve(command)
 
     port =
@@ -214,7 +217,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp remote_launch_command(workspace) when is_binary(workspace) do
     [
       "cd #{shell_escape(workspace)}",
-      "exec #{Config.settings!().codex.command}"
+      "exec #{Config.settings!().agent.command}"
     ]
     |> Enum.join(" && ")
   end
@@ -260,11 +263,11 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp session_policies(workspace, nil) do
-    Config.codex_runtime_settings(workspace)
+    Config.agent_runtime_settings(workspace)
   end
 
   defp session_policies(workspace, worker_host) when is_binary(worker_host) do
-    Config.codex_runtime_settings(workspace, remote: true)
+    Config.agent_runtime_settings(workspace, remote: true)
   end
 
   defp do_start_session(port, workspace, session_policies) do
@@ -327,7 +330,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     receive_loop(
       port,
       on_message,
-      Config.settings!().codex.turn_timeout_ms,
+      Config.settings!().agent.turn_timeout_ms,
       "",
       tool_executor,
       auto_approve_requests
@@ -917,7 +920,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp await_response(port, request_id) do
-    with_timeout_response(port, request_id, Config.settings!().codex.read_timeout_ms, "")
+    with_timeout_response(port, request_id, Config.settings!().agent.read_timeout_ms, "")
   end
 
   defp with_timeout_response(port, request_id, timeout_ms, pending_line) do

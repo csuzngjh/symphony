@@ -1,6 +1,9 @@
 defmodule SymphonyElixir.Codex.DynamicTool do
+  @deprecated "Use AcpxSession instead. The Codex AppServer backend is no longer the default."
   @moduledoc """
   Executes client-side tool calls requested by Codex app-server turns.
+
+  DEPRECATED: Use `AcpxSession` instead. The Codex AppServer backend is no longer the default.
   """
 
   alias SymphonyElixir.Linear.Client

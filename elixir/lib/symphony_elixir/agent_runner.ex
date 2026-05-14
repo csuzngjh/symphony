@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single Linear issue in its workspace with Codex.
+  Executes a single Linear issue in its workspace with an agent (ACPX).
   """
 
   require Logger
@@ -10,13 +10,13 @@ defmodule SymphonyElixir.AgentRunner do
   @type worker_host :: String.t() | nil
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
-  def run(issue, codex_update_recipient \\ nil, opts \\ []) do
+  def run(issue, update_recipient \\ nil, opts \\ []) do
     # The orchestrator owns host retries so one worker lifetime never hops machines.
     worker_host = selected_worker_host(Keyword.get(opts, :worker_host), Config.settings!().worker.ssh_hosts)
 
     Logger.info("Starting agent run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
+    case run_on_worker_host(issue, update_recipient, opts, worker_host) do
       :ok ->
         :ok
 
@@ -26,16 +26,16 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
+  defp run_on_worker_host(issue, update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
     case Workspace.create_for_issue(issue, worker_host) do
       {:ok, workspace} ->
-        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+        send_worker_runtime_info(update_recipient, issue, worker_host, workspace)
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            run_agent_turns(workspace, issue, update_recipient, opts, worker_host)
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -46,19 +46,19 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp codex_message_handler(recipient, issue) do
+  defp message_handler(recipient, issue) do
     fn message ->
-      send_codex_update(recipient, issue, message)
+      send_agent_update(recipient, issue, message)
     end
   end
 
-  defp send_codex_update(recipient, %Issue{id: issue_id}, message)
+  defp send_agent_update(recipient, %Issue{id: issue_id}, message)
        when is_binary(issue_id) and is_pid(recipient) do
-    send(recipient, {:codex_worker_update, issue_id, message})
+    send(recipient, {:agent_worker_update, issue_id, message})
     :ok
   end
 
-  defp send_codex_update(_recipient, _issue, _message), do: :ok
+  defp send_agent_update(_recipient, _issue, _message), do: :ok
 
   defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
@@ -76,39 +76,39 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, _worker_host) do
+  defp run_agent_turns(workspace, issue, update_recipient, opts, _worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
     agent = agent_name_from_config()
     session_name = "issue-#{issue.id}"
 
-    send_phase_update(codex_update_recipient, issue, "starting_session", session_name)
+    send_phase_update(update_recipient, issue, "starting_session", session_name)
 
     case AcpxSession.start_link(
             agent: agent,
             cwd: workspace,
-            recipient: codex_update_recipient,
+            recipient: update_recipient,
             issue_id: issue.id,
             acpx_options: acpx_options_from_config()
           ) do
       {:ok, session_pid} ->
         try do
-          send_phase_update(codex_update_recipient, issue, "ensuring_session", session_name)
+          send_phase_update(update_recipient, issue, "ensuring_session", session_name)
 
           case AcpxSession.sessions_ensure(session_pid, session_name, workspace) do
             {:ok, _session_id} ->
-              send_phase_update(codex_update_recipient, issue, "session_ready", session_name)
+              send_phase_update(update_recipient, issue, "session_ready", session_name)
 
               try do
-                do_run_acpx_turns(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+                do_run_acpx_turns(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, 1, max_turns)
               after
                 AcpxSession.sessions_close(session_pid)
               end
 
             {:error, reason} ->
               Logger.warning("Failed to create acpx session, falling back to exec mode: #{inspect(reason)}")
-              send_phase_update(codex_update_recipient, issue, "exec_fallback", session_name)
-              do_run_acpx_turns_exec(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+              send_phase_update(update_recipient, issue, "exec_fallback", session_name)
+              do_run_acpx_turns_exec(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, 1, max_turns)
           end
         after
           GenServer.stop(session_pid, :normal)
@@ -125,7 +125,7 @@ defmodule SymphonyElixir.AgentRunner do
        when is_binary(issue_id) and is_pid(recipient) do
     send(
       recipient,
-      {:codex_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :phase_update,
          phase: phase,
@@ -139,27 +139,27 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_phase_update(_recipient, _issue, _phase, _session_name), do: :ok
 
-  defp do_run_acpx_turns(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    do_run_turns(:prompt, session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
+  defp do_run_acpx_turns(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    do_run_turns(:prompt, session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
   end
 
-  defp do_run_acpx_turns_exec(session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    do_run_turns(:exec, session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
+  defp do_run_acpx_turns_exec(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    do_run_turns(:exec, session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
   end
 
-  defp do_run_turns(mode, session_pid, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+  defp do_run_turns(mode, session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
     send_fn = if mode == :prompt, do: &AcpxSession.prompt/2, else: &AcpxSession.exec/2
 
-    send_phase_update(codex_update_recipient, issue, "prompt_sent_turn_#{turn_number}", "issue-#{issue.id}")
+    send_phase_update(update_recipient, issue, "prompt_sent_turn_#{turn_number}", "issue-#{issue.id}")
 
     case send_fn.(session_pid, prompt) do
       {:ok, _result} ->
         next_turn_fn = fn refreshed_issue, next_turn ->
-          do_run_turns(mode, session_pid, workspace, refreshed_issue, codex_update_recipient, opts, issue_state_fetcher, next_turn, max_turns)
+          do_run_turns(mode, session_pid, workspace, refreshed_issue, update_recipient, opts, issue_state_fetcher, next_turn, max_turns)
         end
 
-        handle_turn_completion(issue, workspace, session_pid, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn)
+        handle_turn_completion(issue, workspace, session_pid, update_recipient, opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn)
 
       {:error, reason} ->
         Logger.warning("Agent #{mode} failed for #{issue_context(issue)} turn=#{turn_number}: #{inspect(reason)}")
@@ -168,7 +168,7 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp agent_name_from_config do
-    case Config.settings!().codex.agent do
+    case Config.settings!().agent.agent_name do
       agent when is_binary(agent) and agent != "" -> agent
       _ -> "claude"
     end
@@ -178,16 +178,16 @@ defmodule SymphonyElixir.AgentRunner do
     settings = Config.settings!()
 
     max_turns_acpx =
-      case settings.agent.max_turns do
+      case Config.settings!().agent.max_turns do
         n when is_integer(n) and n > 0 -> n
         _ -> nil
       end
 
     %{
-      model: settings.agent.model,
-      allowed_tools: settings.agent.allowed_tools,
-      prompt_retries: settings.agent.prompt_retries,
-      timeout: timeout_seconds(settings.codex.turn_timeout_ms),
+      model: Config.settings!().agent.model,
+      allowed_tools: Config.settings!().agent.allowed_tools,
+      prompt_retries: Config.settings!().agent.prompt_retries,
+      timeout: timeout_seconds(Config.settings!().agent.turn_timeout_ms),
       ttl: 300,
       suppress_reads: true,
       no_terminal: true
@@ -205,7 +205,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp timeout_seconds(_), do: nil
 
-  defp handle_turn_completion(issue, workspace, _session_pid, _codex_update_recipient, _opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn) do
+  defp handle_turn_completion(issue, workspace, _session_pid, _update_recipient, _opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn) do
     Logger.info("Completed agent turn for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns_label(max_turns)}")
 
     case continue_with_issue?(issue, issue_state_fetcher) do

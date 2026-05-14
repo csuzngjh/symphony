@@ -8,7 +8,7 @@ defmodule SymphonyElixir.SymphonySmokeSafetyTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: "project",
       tracker_issue_identifiers: [" PRI-123 ", "", "PRI-123", "PRI-124"],
-      codex_command: "claude"
+      agent_command: "claude"
     )
 
     assert Config.settings!().tracker.issue_identifiers == ["PRI-123", "PRI-124"]

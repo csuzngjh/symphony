@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
-  Polls Linear and dispatches repository copies to Codex-backed workers.
+  Polls Linear and dispatches repository copies to ACPX-backed workers.
   """
 
   use GenServer
@@ -15,7 +15,7 @@ defmodule SymphonyElixir.Orchestrator do
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @attempt_shutdown_timeout_ms 15_000
-  @empty_codex_totals %{
+  @empty_agent_totals %{
     input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0,
@@ -40,8 +40,8 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
-      codex_totals: nil,
-      codex_rate_limits: nil
+      agent_totals: nil,
+      agent_rate_limits: nil
     ]
   end
 
@@ -63,8 +63,8 @@ defmodule SymphonyElixir.Orchestrator do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: nil,
-      codex_totals: @empty_codex_totals,
-      codex_rate_limits: nil
+      agent_totals: @empty_agent_totals,
+      agent_rate_limits: nil
     }
 
     run_terminal_workspace_cleanup()
@@ -202,7 +202,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(
-        {:codex_worker_update, issue_id, %{event: _, timestamp: _} = update},
+        {:agent_worker_update, issue_id, %{event: _, timestamp: _} = update},
         %{running: running} = state
       ) do
     case Map.get(running, issue_id) do
@@ -210,19 +210,19 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       running_entry ->
-        {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
+        {updated_running_entry, token_delta} = integrate_agent_update(running_entry, update)
 
         state =
           state
-          |> apply_codex_token_delta(token_delta)
-          |> apply_codex_rate_limits(update)
+          |> apply_agent_token_delta(token_delta)
+          |> apply_agent_rate_limits(update)
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
     end
   end
 
-  def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+  def handle_info({:agent_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
@@ -483,7 +483,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stalled_running_issues(%State{} = state) do
-    timeout_ms = Config.settings!().codex.stall_timeout_ms
+    timeout_ms = Config.settings!().agent.stall_timeout_ms
 
     cond do
       timeout_ms <= 0 ->
@@ -545,7 +545,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp last_activity_timestamp(running_entry) when is_map(running_entry) do
-    Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
+    Map.get(running_entry, :last_agent_timestamp) || Map.get(running_entry, :started_at)
   end
 
   defp last_activity_timestamp(_running_entry), do: nil
@@ -766,22 +766,22 @@ defmodule SymphonyElixir.Orchestrator do
             session_id: nil,
             attempt_id: issue.id,
             phase: "starting",
-            last_codex_message: nil,
-            last_codex_timestamp: nil,
-            last_codex_event: nil,
+            last_agent_message: nil,
+            last_agent_timestamp: nil,
+            last_agent_event: nil,
             last_raw_event_at: nil,
             last_raw_preview: nil,
-            codex_app_server_pid: nil,
-            codex_input_tokens: 0,
-            codex_output_tokens: 0,
-            codex_total_tokens: 0,
-            codex_cached_read_tokens: 0,
-            codex_cached_write_tokens: 0,
-            codex_last_reported_input_tokens: 0,
-            codex_last_reported_output_tokens: 0,
-            codex_last_reported_total_tokens: 0,
-            codex_last_reported_cached_read_tokens: 0,
-            codex_last_reported_cached_write_tokens: 0,
+            agent_session_pid: nil,
+            agent_input_tokens: 0,
+            agent_output_tokens: 0,
+            agent_total_tokens: 0,
+            agent_cached_read_tokens: 0,
+            agent_cached_write_tokens: 0,
+            agent_last_reported_input_tokens: 0,
+            agent_last_reported_output_tokens: 0,
+            agent_last_reported_total_tokens: 0,
+            agent_last_reported_cached_read_tokens: 0,
+            agent_last_reported_cached_write_tokens: 0,
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
@@ -1190,17 +1190,17 @@ defmodule SymphonyElixir.Orchestrator do
           phase: Map.get(metadata, :phase),
           last_raw_event_at: Map.get(metadata, :last_raw_event_at),
           last_raw_preview: Map.get(metadata, :last_raw_preview),
-          codex_app_server_pid: metadata.codex_app_server_pid,
-          codex_input_tokens: metadata.codex_input_tokens,
-          codex_output_tokens: metadata.codex_output_tokens,
-          codex_total_tokens: metadata.codex_total_tokens,
-          codex_cached_read_tokens: Map.get(metadata, :codex_cached_read_tokens, 0),
-          codex_cached_write_tokens: Map.get(metadata, :codex_cached_write_tokens, 0),
+          agent_session_pid: metadata.agent_session_pid,
+          agent_input_tokens: metadata.agent_input_tokens,
+          agent_output_tokens: metadata.agent_output_tokens,
+          agent_total_tokens: metadata.agent_total_tokens,
+          agent_cached_read_tokens: Map.get(metadata, :agent_cached_read_tokens, 0),
+          agent_cached_write_tokens: Map.get(metadata, :agent_cached_write_tokens, 0),
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
-          last_codex_timestamp: metadata.last_codex_timestamp,
-          last_codex_message: metadata.last_codex_message,
-          last_codex_event: metadata.last_codex_event,
+          last_agent_timestamp: metadata.last_agent_timestamp,
+          last_agent_message: metadata.last_agent_message,
+          last_agent_event: metadata.last_agent_event,
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1223,8 +1223,8 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        running: running,
        retrying: retrying,
-       codex_totals: state.codex_totals,
-       rate_limits: Map.get(state, :codex_rate_limits),
+       agent_totals: state.agent_totals,
+       rate_limits: Map.get(state, :agent_rate_limits),
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -1248,19 +1248,19 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
-  defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
+  defp integrate_agent_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
-    codex_input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
-    codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
-    codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
-    codex_cached_read_tokens = Map.get(running_entry, :codex_cached_read_tokens, 0)
-    codex_cached_write_tokens = Map.get(running_entry, :codex_cached_write_tokens, 0)
-    codex_app_server_pid = Map.get(running_entry, :codex_app_server_pid)
-    last_reported_input = Map.get(running_entry, :codex_last_reported_input_tokens, 0)
-    last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
-    last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
-    last_reported_cached_read = Map.get(running_entry, :codex_last_reported_cached_read_tokens, 0)
-    last_reported_cached_write = Map.get(running_entry, :codex_last_reported_cached_write_tokens, 0)
+    agent_input_tokens = Map.get(running_entry, :agent_input_tokens, 0)
+    agent_output_tokens = Map.get(running_entry, :agent_output_tokens, 0)
+    agent_total_tokens = Map.get(running_entry, :agent_total_tokens, 0)
+    agent_cached_read_tokens = Map.get(running_entry, :agent_cached_read_tokens, 0)
+    agent_cached_write_tokens = Map.get(running_entry, :agent_cached_write_tokens, 0)
+    agent_session_pid = Map.get(running_entry, :agent_session_pid)
+    last_reported_input = Map.get(running_entry, :agent_last_reported_input_tokens, 0)
+    last_reported_output = Map.get(running_entry, :agent_last_reported_output_tokens, 0)
+    last_reported_total = Map.get(running_entry, :agent_last_reported_total_tokens, 0)
+    last_reported_cached_read = Map.get(running_entry, :agent_last_reported_cached_read_tokens, 0)
+    last_reported_cached_write = Map.get(running_entry, :agent_last_reported_cached_write_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
     session_name = Map.get(update, :session_name) || Map.get(running_entry, :session_name)
 
@@ -1272,43 +1272,43 @@ defmodule SymphonyElixir.Orchestrator do
 
     {
       Map.merge(running_entry, %{
-        last_codex_timestamp: timestamp,
-        last_codex_message: summarize_codex_update(update),
+        last_agent_timestamp: timestamp,
+        last_agent_message: summarize_agent_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
         session_name: session_name,
         phase: phase,
-        last_codex_event: event,
+        last_agent_event: event,
         last_raw_event_at: Map.get(update, :raw_event_at) || Map.get(running_entry, :last_raw_event_at),
         last_raw_preview: raw_preview || Map.get(running_entry, :last_raw_preview),
-        codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
-        codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
-        codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
-        codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
-        codex_cached_read_tokens: codex_cached_read_tokens + Map.get(token_delta, :cached_read_tokens, 0),
-        codex_cached_write_tokens: codex_cached_write_tokens + Map.get(token_delta, :cached_write_tokens, 0),
-        codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
-        codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
-        codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
-        codex_last_reported_cached_read_tokens: max(last_reported_cached_read, Map.get(token_delta, :cached_read_reported, 0)),
-        codex_last_reported_cached_write_tokens: max(last_reported_cached_write, Map.get(token_delta, :cached_write_reported, 0)),
+        agent_session_pid: agent_session_pid_for_update(agent_session_pid, update),
+        agent_input_tokens: agent_input_tokens + token_delta.input_tokens,
+        agent_output_tokens: agent_output_tokens + token_delta.output_tokens,
+        agent_total_tokens: agent_total_tokens + token_delta.total_tokens,
+        agent_cached_read_tokens: agent_cached_read_tokens + Map.get(token_delta, :cached_read_tokens, 0),
+        agent_cached_write_tokens: agent_cached_write_tokens + Map.get(token_delta, :cached_write_tokens, 0),
+        agent_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
+        agent_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
+        agent_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
+        agent_last_reported_cached_read_tokens: max(last_reported_cached_read, Map.get(token_delta, :cached_read_reported, 0)),
+        agent_last_reported_cached_write_tokens: max(last_reported_cached_write, Map.get(token_delta, :cached_write_reported, 0)),
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
       }),
       token_delta
     }
   end
 
-  defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
+  defp agent_session_pid_for_update(_existing, %{agent_session_pid: pid})
        when is_binary(pid),
        do: pid
 
-  defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
+  defp agent_session_pid_for_update(_existing, %{agent_session_pid: pid})
        when is_integer(pid),
        do: Integer.to_string(pid)
 
-  defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid}) when is_list(pid),
+  defp agent_session_pid_for_update(_existing, %{agent_session_pid: pid}) when is_list(pid),
     do: to_string(pid)
 
-  defp codex_app_server_pid_for_update(existing, _update), do: existing
+  defp agent_session_pid_for_update(existing, _update), do: existing
 
   defp session_id_for_update(_existing, %{session_id: session_id}) when is_binary(session_id),
     do: session_id
@@ -1345,7 +1345,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp turn_count_for_update(_existing_count, _existing_session_id, _update), do: 0
 
-  defp summarize_codex_update(update) do
+  defp summarize_agent_update(update) do
     %{
       event: update[:event],
       message: summarize_payload(update[:payload]) || update[:raw],
@@ -1404,9 +1404,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp record_session_completion_totals(state, running_entry) when is_map(running_entry) do
     runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
 
-    codex_totals =
+    agent_totals =
       apply_token_delta(
-        state.codex_totals,
+        state.agent_totals,
         %{
           input_tokens: 0,
           output_tokens: 0,
@@ -1415,7 +1415,7 @@ defmodule SymphonyElixir.Orchestrator do
         }
       )
 
-    %{state | codex_totals: codex_totals}
+    %{state | agent_totals: agent_totals}
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
@@ -1439,37 +1439,37 @@ defmodule SymphonyElixir.Orchestrator do
     available_slots(state) > 0 and state_slots_available?(issue, state.running)
   end
 
-  defp apply_codex_token_delta(
-         %{codex_totals: codex_totals} = state,
+  defp apply_agent_token_delta(
+         %{agent_totals: agent_totals} = state,
          %{input_tokens: input, output_tokens: output, total_tokens: total} = token_delta
        )
        when is_integer(input) and is_integer(output) and is_integer(total) do
-    %{state | codex_totals: apply_token_delta(codex_totals, token_delta)}
+    %{state | agent_totals: apply_token_delta(agent_totals, token_delta)}
   end
 
-  defp apply_codex_token_delta(state, _token_delta), do: state
+  defp apply_agent_token_delta(state, _token_delta), do: state
 
-  defp apply_codex_rate_limits(%State{} = state, update) when is_map(update) do
+  defp apply_agent_rate_limits(%State{} = state, update) when is_map(update) do
     case extract_rate_limits(update) do
       %{} = rate_limits ->
-        %{state | codex_rate_limits: rate_limits}
+        %{state | agent_rate_limits: rate_limits}
 
       _ ->
         state
     end
   end
 
-  defp apply_codex_rate_limits(state, _update), do: state
+  defp apply_agent_rate_limits(state, _update), do: state
 
-  defp apply_token_delta(codex_totals, token_delta) do
-    input_tokens = Map.get(codex_totals, :input_tokens, 0) + token_delta.input_tokens
-    output_tokens = Map.get(codex_totals, :output_tokens, 0) + token_delta.output_tokens
-    total_tokens = Map.get(codex_totals, :total_tokens, 0) + token_delta.total_tokens
-    cached_read_tokens = Map.get(codex_totals, :cached_read_tokens, 0) + Map.get(token_delta, :cached_read_tokens, 0)
-    cached_write_tokens = Map.get(codex_totals, :cached_write_tokens, 0) + Map.get(token_delta, :cached_write_tokens, 0)
-
+defp apply_token_delta(agent_totals, token_delta) do
+    input_tokens = Map.get(agent_totals, :input_tokens, 0) + token_delta.input_tokens
+    output_tokens = Map.get(agent_totals, :output_tokens, 0) + token_delta.output_tokens
+    total_tokens = Map.get(agent_totals, :total_tokens, 0) + token_delta.total_tokens
+    cached_read_tokens = Map.get(agent_totals, :cached_read_tokens, 0) + Map.get(token_delta, :cached_read_tokens, 0)
+    cached_write_tokens = Map.get(agent_totals, :cached_write_tokens, 0) + Map.get(token_delta, :cached_write_tokens, 0)
     seconds_running =
-      Map.get(codex_totals, :seconds_running, 0) + Map.get(token_delta, :seconds_running, 0)
+      Map.get(agent_totals, :seconds_running, 0) + Map.get(token_delta, :seconds_running, 0)
+
 
     %{
       input_tokens: max(0, input_tokens),
@@ -1485,11 +1485,11 @@ defmodule SymphonyElixir.Orchestrator do
     running_entry = running_entry || %{}
     usage = extract_token_usage(update)
 
-    input_delta = compute_token_delta(running_entry, :input, usage, :codex_last_reported_input_tokens)
-    output_delta = compute_token_delta(running_entry, :output, usage, :codex_last_reported_output_tokens)
-    total_delta = compute_token_delta(running_entry, :total, usage, :codex_last_reported_total_tokens)
-    cached_read_delta = compute_token_delta(running_entry, :cached_read, usage, :codex_last_reported_cached_read_tokens)
-    cached_write_delta = compute_token_delta(running_entry, :cached_write, usage, :codex_last_reported_cached_write_tokens)
+    input_delta = compute_token_delta(running_entry, :input, usage, :agent_last_reported_input_tokens)
+    output_delta = compute_token_delta(running_entry, :output, usage, :agent_last_reported_output_tokens)
+    total_delta = compute_token_delta(running_entry, :total, usage, :agent_last_reported_total_tokens)
+    cached_read_delta = compute_token_delta(running_entry, :cached_read, usage, :agent_last_reported_cached_read_tokens)
+    cached_write_delta = compute_token_delta(running_entry, :cached_write, usage, :agent_last_reported_cached_write_tokens)
 
     %{
       input_tokens: input_delta.delta,

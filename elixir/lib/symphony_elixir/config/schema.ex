@@ -148,47 +148,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:model, :string)
       field(:allowed_tools, {:array, :string})
       field(:prompt_retries, :integer, default: 0)
-    end
-
-    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
-    def changeset(schema, attrs) do
-      schema
-      |> cast(
-        attrs,
-        [
-          :max_concurrent_agents,
-          :max_turns,
-          :max_retry_backoff_ms,
-          :continuation_retry_delay_ms,
-          :max_concurrent_agents_by_state,
-          :model,
-          :allowed_tools,
-          :prompt_retries
-        ],
-        empty_values: []
-      )
-      |> validate_number(:max_concurrent_agents, greater_than: 0)
-      |> validate_number(:max_turns, greater_than_or_equal_to: -1)
-      |> validate_change(:max_turns, fn :max_turns, value ->
-        if value == -1 or value > 0, do: [], else: [max_turns: "must be -1 (unlimited) or greater than 0"]
-      end)
-      |> validate_number(:max_retry_backoff_ms, greater_than: 0)
-      |> validate_number(:continuation_retry_delay_ms, greater_than: 0)
-      |> validate_number(:prompt_retries, greater_than_or_equal_to: 0)
-      |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
-      |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
-    end
-  end
-
-  defmodule Codex do
-    @moduledoc false
-    use Ecto.Schema
-    import Ecto.Changeset
-
-    @primary_key false
-    embedded_schema do
-      field(:command, :string, default: "claude")
-      field(:agent, :string, default: "claude")
+      field(:command, :string, default: "codex app-server")
+      field(:agent_name, :string, default: "claude")
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -213,8 +174,16 @@ defmodule SymphonyElixir.Config.Schema do
       |> cast(
         attrs,
         [
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :continuation_retry_delay_ms,
+          :max_concurrent_agents_by_state,
+          :model,
+          :allowed_tools,
+          :prompt_retries,
           :command,
-          :agent,
+          :agent_name,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,
@@ -224,10 +193,19 @@ defmodule SymphonyElixir.Config.Schema do
         ],
         empty_values: []
       )
-      |> validate_required([:command])
+      |> validate_number(:max_concurrent_agents, greater_than: 0)
+      |> validate_number(:max_turns, greater_than_or_equal_to: -1)
+      |> validate_change(:max_turns, fn :max_turns, value ->
+        if value == -1 or value > 0, do: [], else: [max_turns: "must be -1 (unlimited) or greater than 0"]
+      end)
+      |> validate_number(:max_retry_backoff_ms, greater_than: 0)
+      |> validate_number(:continuation_retry_delay_ms, greater_than: 0)
+      |> validate_number(:prompt_retries, greater_than_or_equal_to: 0)
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+      |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
+      |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
     end
   end
 
@@ -299,7 +277,6 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
-    embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -323,7 +300,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
-    case settings.codex.turn_sandbox_policy do
+    case settings.agent.turn_sandbox_policy do
       %{} = policy ->
         policy
 
@@ -338,7 +315,7 @@ defmodule SymphonyElixir.Config.Schema do
   @spec resolve_runtime_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil, keyword()) ::
           {:ok, map()} | {:error, term()}
   def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
-    case settings.codex.turn_sandbox_policy do
+    case settings.agent.turn_sandbox_policy do
       %{} = policy ->
         {:ok, policy}
 
@@ -391,7 +368,6 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
-    |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
@@ -409,13 +385,13 @@ defmodule SymphonyElixir.Config.Schema do
       | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
     }
 
-    codex = %{
-      settings.codex
-      | approval_policy: normalize_keys(settings.codex.approval_policy),
-        turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
+    agent = %{
+      settings.agent
+      | approval_policy: normalize_keys(settings.agent.approval_policy),
+        turn_sandbox_policy: normalize_optional_map(settings.agent.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    %{settings | tracker: tracker, workspace: workspace, agent: agent}
   end
 
   defp normalize_keys(value) when is_map(value) do
