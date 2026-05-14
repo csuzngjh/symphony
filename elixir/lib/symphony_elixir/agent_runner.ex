@@ -299,4 +299,21 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp max_turns_label(-1), do: "unlimited"
   defp max_turns_label(n), do: to_string(n)
+
+  @doc false
+  def __testing__ do
+    %{
+      selected_worker_host: &selected_worker_host/2,
+      continue_with_issue: &continue_with_issue?/2,
+      active_issue_state: &active_issue_state?/1,
+      acpx_options_from_config: &acpx_options_from_config/0,
+      timeout_seconds: &timeout_seconds/1,
+      agent_name_from_config: &agent_name_from_config/0,
+      build_turn_prompt: &build_turn_prompt/4,
+      send_agent_update: &send_agent_update/3,
+      send_worker_runtime_info: &send_worker_runtime_info/4,
+      normalize_issue_state: &normalize_issue_state/1,
+      max_turns_label: &max_turns_label/1
+    }
+  end
 end

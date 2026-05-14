@@ -148,7 +148,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:model, :string)
       field(:allowed_tools, {:array, :string})
       field(:prompt_retries, :integer, default: 0)
-      field(:command, :string, default: "codex app-server")
+      field(:command, :string, default: nil)
       field(:agent_name, :string, default: "claude")
 
       field(:approval_policy, StringOrMap,

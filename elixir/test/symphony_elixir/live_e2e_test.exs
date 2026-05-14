@@ -8,7 +8,7 @@ defmodule SymphonyElixir.LiveE2ETest do
   @moduletag timeout: 300_000
 
   @default_team_key "SYME2E"
-  @default_docker_auth_json Path.join(System.user_home!(), ".codex/auth.json")
+  @default_docker_auth_json Path.join(System.user_home!(), ".acpx/auth.json")
   @docker_worker_count 2
   @docker_support_dir Path.expand("../support/live_e2e_docker", __DIR__)
   @docker_compose_file Path.join(@docker_support_dir, "docker-compose.yml")
@@ -521,7 +521,7 @@ agent_turn_timeout_ms: 600_000,
   defp live_worker_setup!(:local, _run_id, test_root) when is_binary(test_root) do
     %{
       cleanup: fn -> :ok end,
-      agent_command: "codex app-server",
+      agent_command: "acpx exec",
       ssh_worker_hosts: [],
       workspace_root: Path.join(test_root, "workspaces")
     }
@@ -559,7 +559,7 @@ agent_turn_timeout_ms: 600_000,
 
     %{
       cleanup: fn -> cleanup_remote_test_root(remote_test_root, ssh_worker_hosts) end,
-      agent_command: "codex app-server",
+      agent_command: "acpx exec",
       ssh_worker_hosts: ssh_worker_hosts,
       workspace_root: remote_workspace_root
     }
@@ -597,7 +597,7 @@ agent_turn_timeout_ms: 600_000,
             cleanup_remote_test_root(remote_test_root, worker_hosts)
             base_cleanup.()
           end,
-          agent_command: "codex app-server",
+          agent_command: "acpx exec",
           ssh_worker_hosts: worker_hosts,
           workspace_root: remote_workspace_root
         }

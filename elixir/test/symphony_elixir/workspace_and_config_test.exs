@@ -867,11 +867,11 @@ agent_approval_policy: nil,
     assert config.agent.stall_timeout_ms == 300_000
 
     write_workflow_file!(Workflow.workflow_file_path(),
-      agent_command: "codex --config 'model=\"gpt-5.5\"' app-server"
+      agent_command: "acpx exec"
     )
 
     assert Config.settings!().agent.command ==
-             "codex --config 'model=\"gpt-5.5\"' app-server"
+             "acpx exec"
 
     explicit_root =
       Path.join(
@@ -979,8 +979,8 @@ agent_approval_policy: nil,
              "nested" => %{"flag" => true}
            }
 
-    write_workflow_file!(Workflow.workflow_file_path(), agent_command: "codex app-server")
-    assert Config.settings!().agent.command == "codex app-server"
+    write_workflow_file!(Workflow.workflow_file_path(), agent_command: "acpx exec")
+    assert Config.settings!().agent.command == "acpx exec"
   end
 
   test "config resolves $VAR references for env-backed secret and path values" do
@@ -988,7 +988,7 @@ agent_approval_policy: nil,
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
     workspace_root = Path.join("/tmp", "symphony-workspace-root")
     api_key = "resolved-secret"
-    codex_bin = Path.join(["~", "bin", "codex"])
+    agent_bin = Path.join(["~", "bin", "acpx"])
 
     previous_workspace_root = System.get_env(workspace_env_var)
     previous_api_key = System.get_env(api_key_env_var)
@@ -1004,13 +1004,13 @@ agent_approval_policy: nil,
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "$#{api_key_env_var}",
       workspace_root: "$#{workspace_env_var}",
-      agent_command: "#{codex_bin} app-server"
+      agent_command: "#{agent_bin} exec"
     )
 
     config = Config.settings!()
     assert config.tracker.api_key == api_key
     assert normalize_path_for_platform(config.workspace.root) == normalize_path_for_platform(workspace_root)
-    assert config.agent.command == "#{codex_bin} app-server"
+    assert config.agent.command == "#{agent_bin} exec"
   end
 
   test "config no longer resolves legacy env: references" do
@@ -1327,7 +1327,7 @@ agent_approval_policy: nil,
   end
 
   test "workflow prompt is used when building base prompt" do
-    workflow_prompt = "Workflow prompt body used as codex instruction."
+    workflow_prompt = "Workflow prompt body used as agent instruction."
 
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
     assert Config.workflow_prompt() == workflow_prompt

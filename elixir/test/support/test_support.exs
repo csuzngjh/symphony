@@ -218,13 +218,13 @@ defmodule SymphonyElixir.TestSupport do
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     continuation_retry_delay_ms = Keyword.get(config, :continuation_retry_delay_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
-    codex_command = Keyword.get(config, :agent_command)
-    codex_approval_policy = Keyword.get(config, :agent_approval_policy)
-    codex_thread_sandbox = Keyword.get(config, :agent_thread_sandbox)
-    codex_turn_sandbox_policy = Keyword.get(config, :agent_turn_sandbox_policy)
-    codex_turn_timeout_ms = Keyword.get(config, :agent_turn_timeout_ms)
-    codex_read_timeout_ms = Keyword.get(config, :agent_read_timeout_ms)
-    codex_stall_timeout_ms = Keyword.get(config, :agent_stall_timeout_ms)
+    agent_command = Keyword.get(config, :agent_command)
+    agent_approval_policy = Keyword.get(config, :agent_approval_policy)
+    agent_thread_sandbox = Keyword.get(config, :agent_thread_sandbox)
+    agent_turn_sandbox_policy = Keyword.get(config, :agent_turn_sandbox_policy)
+    agent_turn_timeout_ms = Keyword.get(config, :agent_turn_timeout_ms)
+    agent_read_timeout_ms = Keyword.get(config, :agent_read_timeout_ms)
+    agent_stall_timeout_ms = Keyword.get(config, :agent_stall_timeout_ms)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -260,13 +260,13 @@ defmodule SymphonyElixir.TestSupport do
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  continuation_retry_delay_ms: #{yaml_value(continuation_retry_delay_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
-        "  command: #{yaml_value(codex_command)}",
-        "  approval_policy: #{yaml_value(codex_approval_policy)}",
-        "  thread_sandbox: #{yaml_value(codex_thread_sandbox)}",
-        "  turn_sandbox_policy: #{yaml_value(codex_turn_sandbox_policy)}",
-        "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
-        "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
-        "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
+        "  command: #{yaml_value(agent_command)}",
+        "  approval_policy: #{yaml_value(agent_approval_policy)}",
+        "  thread_sandbox: #{yaml_value(agent_thread_sandbox)}",
+        "  turn_sandbox_policy: #{yaml_value(agent_turn_sandbox_policy)}",
+        "  turn_timeout_ms: #{yaml_value(agent_turn_timeout_ms)}",
+        "  read_timeout_ms: #{yaml_value(agent_read_timeout_ms)}",
+        "  stall_timeout_ms: #{yaml_value(agent_stall_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),

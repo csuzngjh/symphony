@@ -410,7 +410,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,
-             "logs" => %{"codex_session_logs" => []},
+             "logs" => %{"acpx_session_logs" => []},
              "recent_events" => [],
              "last_error" => nil,
              "tracked" => %{}
