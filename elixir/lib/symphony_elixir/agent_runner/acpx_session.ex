@@ -90,11 +90,18 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
   @spec init(keyword()) :: {:ok, state()}
   def init(opts) do
-    strategy = AcpxCli.resolve_strategy()
+    strategy =
+      try do
+        AcpxCli.resolve_strategy()
+      rescue
+        _ -> {:error, "ACPX CLI resolution failed: npm or acpx not found"}
+      catch
+        _, _ -> {:error, "ACPX CLI resolution failed: npm or acpx not found"}
+      end
 
     case strategy do
       {:error, msg} ->
-        Logger.error("ACPX CLI resolution failed: #{msg}")
+        Logger.warning("ACPX CLI resolution: #{msg}")
 
       _ ->
         Logger.info("ACPX execution strategy: #{AcpxCli.strategy_label(strategy)}")

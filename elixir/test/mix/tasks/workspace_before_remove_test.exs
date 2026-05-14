@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
   use ExUnit.Case, async: false
 
+  @unix match?({:unix, _}, :os.type())
+
   alias Mix.Tasks.Workspace.BeforeRemove
 
   import ExUnit.CaptureIO
@@ -10,6 +12,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     :ok
   end
 
+  @tag skip: if(not @unix, do: "Requires gh CLI and Unix shell")
   test "prints help" do
     output =
       capture_io(fn ->
@@ -19,12 +22,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     assert output =~ "mix workspace.before_remove"
   end
 
+  @tag skip: if(not @unix, do: "Requires gh CLI and Unix shell")
   test "fails on invalid options" do
     assert_raise Mix.Error, ~r/Invalid option/, fn ->
       BeforeRemove.run(["--wat"])
     end
   end
 
+  @tag skip: if(not @unix, do: "Requires gh CLI and Unix shell")
   test "no-ops when branch is unavailable" do
     with_path([], fn ->
       in_temp_dir(fn ->
@@ -38,6 +43,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires gh CLI and Unix shell")
   test "no-ops when gh is unavailable" do
     with_path([], fn ->
       output =
@@ -49,6 +55,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires gh CLI and Unix shell")
   test "uses current branch for lookup when branch option is omitted" do
     with_fake_gh_and_git(
       """
@@ -100,6 +107,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  @tag skip: if(not @unix, do: "Requires gh CLI and Unix shell")
   test "closes open pull requests for the branch and tolerates close failures" do
     with_fake_gh(fn log_path ->
       File.write!(log_path, "")
@@ -130,6 +138,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires gh CLI and Unix shell")
   test "formats close failures without command stderr output" do
     with_fake_gh(
       """
@@ -167,6 +176,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  @tag skip: if(not @unix, do: "Requires gh CLI and Unix shell")
   test "no-ops when PR list fails for current branch" do
     with_fake_gh(
       """
@@ -202,6 +212,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  @tag skip: if(not @unix, do: "Requires gh CLI and Unix shell")
   test "no-ops when git current branch is blank" do
     with_fake_gh_and_git(
       """
@@ -234,6 +245,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  @tag skip: if(not @unix, do: "Requires gh CLI and Unix shell")
   test "no-ops when gh auth is unavailable" do
     with_fake_gh(
       """

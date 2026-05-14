@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.PrBody.CheckTest do
   use ExUnit.Case, async: false
 
+  @unix match?({:unix, _}, :os.type())
+
   alias Mix.Tasks.PrBody.Check
 
   import ExUnit.CaptureIO
@@ -71,6 +73,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails when template is missing" do
     in_temp_repo(fn ->
       File.write!("body.md", @valid_body)
@@ -81,6 +84,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails when template has no headings" do
     in_temp_repo(fn ->
       write_template!("no headings here")
@@ -92,6 +96,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails when body file is missing" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -102,6 +107,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails when body still has placeholders" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -118,6 +124,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails when heading is missing" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -136,6 +143,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails when headings are out of order" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -175,6 +183,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails on empty section" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -193,6 +202,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails when a middle section is blank before the next heading" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -231,6 +241,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails when bullet and checkbox expectations are not met" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -273,6 +284,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails when heading has no content delimiter" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -286,6 +298,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "fails when heading appears at end of file" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -302,6 +315,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  @tag skip: if(not @unix, do: "Requires git and Unix shell")
   test "passes for valid body" do
     in_temp_repo(fn ->
       write_template!(@template)

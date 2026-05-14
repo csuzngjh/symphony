@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.StatusDashboardSnapshotTest do
   use SymphonyElixir.TestSupport
 
+  @windows match?({:win32, _}, :os.type())
+
   alias SymphonyElixir.TestSupport.Snapshot
 
   @terminal_columns 115

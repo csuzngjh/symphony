@@ -1,6 +1,32 @@
 defmodule SymphonyElixir.TestSupport do
   @workflow_prompt "You are an agent for this repository."
 
+  def normalize_path_for_platform(path) when is_binary(path) do
+    path
+    |> String.replace("\\", "/")
+    |> String.downcase()
+  end
+
+  def symlink_supported? do
+    not SymphonyElixir.TestSupport.Platform.windows?() or
+      SymphonyElixir.TestSupport.Platform.can_create_symlinks?()
+  end
+
+  def read_text_normalized(path) do
+    path
+    |> File.read!()
+    |> String.replace("\r\n", "\n")
+  end
+
+  def git_available? do
+    case System.cmd("git", ["--version"], stderr_to_stdout: true) do
+      {_, 0} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
   defmacro __using__(_opts) do
     quote do
       use ExUnit.Case
@@ -22,7 +48,16 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0,
+          normalize_path_for_platform: 1,
+          symlink_supported?: 0,
+          read_text_normalized: 1,
+          git_available?: 0
+        ]
 
       setup do
         workflow_root =
@@ -208,7 +243,8 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp yaml_value(value) when is_binary(value) do
-    "\"" <> String.replace(value, "\"", "\\\"") <> "\""
+    escaped = value |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\"")
+    "\"" <> escaped <> "\""
   end
 
   defp yaml_value(value) when is_integer(value), do: to_string(value)

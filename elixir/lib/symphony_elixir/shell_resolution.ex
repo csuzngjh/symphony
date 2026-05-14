@@ -39,11 +39,11 @@ defmodule SymphonyElixir.ShellResolution do
 
   defp resolve_windows(command, resolver) do
     cond do
-      resolver.("pwsh") != nil ->
-        {"pwsh", ["-NoProfile", "-Command", command]}
+      (pwsh_path = resolver.("pwsh")) != nil ->
+        {pwsh_path, ["-NoProfile", "-Command", command]}
 
-      resolver.("powershell") != nil ->
-        {"powershell", ["-NoProfile", "-Command", command]}
+      (ps_path = resolver.("powershell")) != nil ->
+        {ps_path, ["-NoProfile", "-Command", command]}
 
       true ->
         {"cmd", ["/S", "/C", command]}

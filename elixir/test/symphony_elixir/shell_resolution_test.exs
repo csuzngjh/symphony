@@ -31,7 +31,7 @@ defmodule SymphonyElixir.ShellResolutionTest do
 
       try do
         Application.put_env(:symphony_elixir, :os_type, :windows)
-        assert ShellResolution.resolve("echo hello", resolver) == {"pwsh", ["-NoProfile", "-Command", "echo hello"]}
+        assert ShellResolution.resolve("echo hello", resolver) == {"/usr/bin/pwsh", ["-NoProfile", "-Command", "echo hello"]}
       after
         if original, do: Application.put_env(:symphony_elixir, :os_type, original), else: Application.delete_env(:symphony_elixir, :os_type)
       end
@@ -41,7 +41,7 @@ defmodule SymphonyElixir.ShellResolutionTest do
       resolver = fn
         "sh" -> nil
         "pwsh" -> nil
-        "powershell" -> "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        "powershell" -> ~S(C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe)
         _ -> nil
       end
 
@@ -49,7 +49,7 @@ defmodule SymphonyElixir.ShellResolutionTest do
 
       try do
         Application.put_env(:symphony_elixir, :os_type, :windows)
-        assert ShellResolution.resolve("echo hello", resolver) == {"powershell", ["-NoProfile", "-Command", "echo hello"]}
+        assert ShellResolution.resolve("echo hello", resolver) == {~S(C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe), ["-NoProfile", "-Command", "echo hello"]}
       after
         if original, do: Application.put_env(:symphony_elixir, :os_type, original), else: Application.delete_env(:symphony_elixir, :os_type)
       end

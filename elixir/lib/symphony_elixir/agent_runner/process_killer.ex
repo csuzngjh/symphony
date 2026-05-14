@@ -72,26 +72,44 @@ defmodule SymphonyElixir.AgentRunner.ProcessKiller.WindowsTaskkill do
   @impl true
   def kill_tree(os_pid, _opts) when is_integer(os_pid) and os_pid > 0 do
     pid_str = Integer.to_string(os_pid)
+    cmd = taskkill_path()
 
-    case System.cmd("taskkill", ["/PID", pid_str, "/T", "/F"],
-           stderr_to_stdout: true
-         ) do
-      {_output, 0} ->
+    try do
+      case System.cmd(cmd, ["/PID", pid_str, "/T", "/F"],
+             stderr_to_stdout: true
+           ) do
+        {_output, 0} ->
+          :ok
+
+        {output, _status} ->
+          if String.contains?(output, "not found") or
+               String.contains?(output, "no running") or
+               String.contains?(output, "不存在") do
+            :ok
+          else
+            Logger.warning("ProcessKiller taskkill non-fatal: pid=#{pid_str} output=#{String.trim(output)}")
+            :ok
+          end
+      end
+    rescue
+      ErlangError ->
+        Logger.warning("ProcessKiller taskkill not available: pid=#{pid_str}")
         :ok
-
-      {output, _status} ->
-        if String.contains?(output, "not found") or
-             String.contains?(output, "no running") or
-             String.contains?(output, "不存在") do
-          :ok
-        else
-          Logger.warning("ProcessKiller taskkill non-fatal: pid=#{pid_str} output=#{String.trim(output)}")
-          :ok
-        end
     end
   end
 
   def kill_tree(_os_pid, _opts), do: :ok
+
+  defp taskkill_path do
+    system_root = System.get_env("SystemRoot") || "C:\\Windows"
+    candidate = Path.join([system_root, "System32", "taskkill.exe"])
+
+    if File.exists?(candidate) do
+      candidate
+    else
+      "taskkill"
+    end
+  end
 end
 
 defmodule SymphonyElixir.AgentRunner.ProcessKiller.UnixSigterm do

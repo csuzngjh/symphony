@@ -3,7 +3,10 @@ defmodule SymphonyElixir.AgentRunner.ProcessKillerTest do
 
   alias SymphonyElixir.AgentRunner.ProcessKiller
 
+  @windows match?({:win32, _}, :os.type())
+
   describe "WindowsTaskkill" do
+    @tag skip: if(not @windows, do: "WindowsTaskkill only runs on Windows")
     test "kill_tree with valid pid calls taskkill" do
       killer = SymphonyElixir.AgentRunner.ProcessKiller.WindowsTaskkill
 
@@ -11,6 +14,7 @@ defmodule SymphonyElixir.AgentRunner.ProcessKillerTest do
       assert result == :ok
     end
 
+    @tag skip: if(not @windows, do: "WindowsTaskkill only runs on Windows")
     test "kill_tree with invalid pid returns ok (idempotent)" do
       killer = SymphonyElixir.AgentRunner.ProcessKiller.WindowsTaskkill
 
@@ -20,6 +24,7 @@ defmodule SymphonyElixir.AgentRunner.ProcessKillerTest do
   end
 
   describe "UnixSigterm" do
+    @tag skip: if(@windows, do: "Unix kill not available on Windows")
     test "kill_tree with valid pid returns ok" do
       killer = SymphonyElixir.AgentRunner.ProcessKiller.UnixSigterm
 
@@ -27,6 +32,7 @@ defmodule SymphonyElixir.AgentRunner.ProcessKillerTest do
       assert result == :ok
     end
 
+    @tag skip: if(@windows, do: "Unix kill not available on Windows")
     test "kill_tree with invalid pid returns ok (idempotent)" do
       killer = SymphonyElixir.AgentRunner.ProcessKiller.UnixSigterm
 

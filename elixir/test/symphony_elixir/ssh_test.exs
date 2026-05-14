@@ -1,8 +1,11 @@
 defmodule SymphonyElixir.SSHTest do
   use ExUnit.Case, async: false
 
+  @unix match?({:unix, _}, :os.type())
+
   alias SymphonyElixir.SSH
 
+  @tag skip: if(not @unix, do: "SSH tests require Unix shell")
   test "run/3 keeps bracketed IPv6 host:port targets intact" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-ipv6-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
@@ -23,6 +26,7 @@ defmodule SymphonyElixir.SSHTest do
     assert trace =~ "printf ok"
   end
 
+  @tag skip: if(not @unix, do: "SSH tests require Unix shell")
   test "run/3 leaves unbracketed IPv6-style targets unchanged" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-ipv6-raw-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
@@ -43,6 +47,7 @@ defmodule SymphonyElixir.SSHTest do
     refute trace =~ "-p 2200"
   end
 
+  @tag skip: if(not @unix, do: "SSH tests require Unix shell")
   test "run/3 passes host:port targets through ssh -p" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
@@ -67,6 +72,7 @@ defmodule SymphonyElixir.SSHTest do
     assert trace =~ "echo ready"
   end
 
+  @tag skip: if(not @unix, do: "SSH tests require Unix shell")
   test "run/3 keeps the user prefix when parsing user@host:port targets" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-user-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
@@ -87,6 +93,7 @@ defmodule SymphonyElixir.SSHTest do
     assert trace =~ "printf ok"
   end
 
+  @tag skip: if(not @unix, do: "SSH tests require Unix shell")
   test "run/3 returns an error when ssh is unavailable" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-missing-test-#{System.unique_integer([:positive])}")
     previous_path = System.get_env("PATH")
@@ -102,6 +109,7 @@ defmodule SymphonyElixir.SSHTest do
     assert {:error, :ssh_not_found} = SSH.run("localhost", "printf ok")
   end
 
+  @tag skip: if(not @unix, do: "SSH tests require Unix shell")
   test "start_port/3 supports binary output without line mode" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-port-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
@@ -132,6 +140,7 @@ defmodule SymphonyElixir.SSHTest do
     refute trace =~ " -F "
   end
 
+  @tag skip: if(not @unix, do: "SSH tests require Unix shell")
   test "start_port/3 supports line mode" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-line-port-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
@@ -157,6 +166,7 @@ defmodule SymphonyElixir.SSHTest do
     assert trace =~ "-T -p 2222 localhost bash -lc"
   end
 
+  @tag skip: if(not @unix, do: "SSH tests require Unix shell")
   test "remote_shell_command/1 escapes embedded single quotes" do
     assert SSH.remote_shell_command("printf 'hello'") ==
              "bash -lc 'printf '\"'\"'hello'\"'\"''"
