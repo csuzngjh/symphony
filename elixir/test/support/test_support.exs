@@ -137,22 +137,27 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, value), do: System.put_env(key, value)
 
   def stop_default_http_server do
-    case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
-           {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
-           _child -> false
-         end) do
-      {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
-        :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
+    case Supervisor.which_children(SymphonyElixir.Supervisor) do
+      children when is_list(children) ->
+        case Enum.find(children, fn
+               {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
+               _child -> false
+             end) do
+          {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
+            if Process.alive?(pid) do
+              Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
+              Process.exit(pid, :normal)
+            end
 
-        if Process.alive?(pid) do
-          Process.exit(pid, :normal)
+          _ ->
+            :ok
         end
-
-        :ok
 
       _ ->
         :ok
     end
+  rescue
+    _ -> :ok
   end
 
   defp workflow_content(overrides) do
@@ -174,13 +179,13 @@ defmodule SymphonyElixir.TestSupport do
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
-          codex_command: "codex app-server",
-          codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
-          codex_thread_sandbox: "workspace-write",
-          codex_turn_sandbox_policy: nil,
-          codex_turn_timeout_ms: 3_600_000,
-          codex_read_timeout_ms: 5_000,
-          codex_stall_timeout_ms: 300_000,
+          agent_command: "claude",
+          agent_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
+          agent_thread_sandbox: "workspace-write",
+          agent_turn_sandbox_policy: nil,
+          agent_turn_timeout_ms: 3_600_000,
+          agent_read_timeout_ms: 5_000,
+          agent_stall_timeout_ms: 300_000,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -213,13 +218,13 @@ defmodule SymphonyElixir.TestSupport do
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     continuation_retry_delay_ms = Keyword.get(config, :continuation_retry_delay_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
-    codex_command = Keyword.get(config, :codex_command)
-    codex_approval_policy = Keyword.get(config, :codex_approval_policy)
-    codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
-    codex_turn_sandbox_policy = Keyword.get(config, :codex_turn_sandbox_policy)
-    codex_turn_timeout_ms = Keyword.get(config, :codex_turn_timeout_ms)
-    codex_read_timeout_ms = Keyword.get(config, :codex_read_timeout_ms)
-    codex_stall_timeout_ms = Keyword.get(config, :codex_stall_timeout_ms)
+    agent_command = Keyword.get(config, :agent_command)
+    agent_approval_policy = Keyword.get(config, :agent_approval_policy)
+    agent_thread_sandbox = Keyword.get(config, :agent_thread_sandbox)
+    agent_turn_sandbox_policy = Keyword.get(config, :agent_turn_sandbox_policy)
+    agent_turn_timeout_ms = Keyword.get(config, :agent_turn_timeout_ms)
+    agent_read_timeout_ms = Keyword.get(config, :agent_read_timeout_ms)
+    agent_stall_timeout_ms = Keyword.get(config, :agent_stall_timeout_ms)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -255,14 +260,13 @@ defmodule SymphonyElixir.TestSupport do
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  continuation_retry_delay_ms: #{yaml_value(continuation_retry_delay_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
-        "codex:",
-        "  command: #{yaml_value(codex_command)}",
-        "  approval_policy: #{yaml_value(codex_approval_policy)}",
-        "  thread_sandbox: #{yaml_value(codex_thread_sandbox)}",
-        "  turn_sandbox_policy: #{yaml_value(codex_turn_sandbox_policy)}",
-        "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
-        "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
-        "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
+        "  command: #{yaml_value(agent_command)}",
+        "  approval_policy: #{yaml_value(agent_approval_policy)}",
+        "  thread_sandbox: #{yaml_value(agent_thread_sandbox)}",
+        "  turn_sandbox_policy: #{yaml_value(agent_turn_sandbox_policy)}",
+        "  turn_timeout_ms: #{yaml_value(agent_turn_timeout_ms)}",
+        "  read_timeout_ms: #{yaml_value(agent_read_timeout_ms)}",
+        "  stall_timeout_ms: #{yaml_value(agent_stall_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),

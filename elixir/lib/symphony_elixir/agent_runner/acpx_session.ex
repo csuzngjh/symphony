@@ -692,11 +692,11 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
   defp send_update(recipient, issue_id, %{type: type, data: data} = _event) do
     adapted = adapt_acpx_event(type, data)
-    send(recipient, {:codex_worker_update, issue_id, adapted})
+    send(recipient, {:agent_worker_update, issue_id, adapted})
   end
 
   defp send_update(recipient, issue_id, event) do
-    send(recipient, {:codex_worker_update, issue_id, event})
+    send(recipient, {:agent_worker_update, issue_id, event})
   end
 
   defp adapt_acpx_event(:session_update, data) do
@@ -807,4 +807,21 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
   end
 
   defp port_os_pid(_port), do: nil
+
+  @doc false
+  def __testing__ do
+    %{
+      build_exec_command: &build_exec_command/2,
+      build_global_args: &build_global_args/1,
+      build_sessions_ensure_args: &build_sessions_ensure_args/3,
+      build_sessions_new_args: &build_sessions_new_args/3,
+      build_prompt_args: &build_prompt_args/4,
+      build_exec_args: &build_exec_args/3,
+      classify_exit_status: &classify_exit_status/2,
+      parse_session_id_from_output: &parse_session_id_from_output/1,
+      agent_subcommand: &agent_subcommand/1,
+      adapt_acpx_event: &adapt_acpx_event/2,
+      extract_usage_from_acpx: &extract_usage_from_acpx/1
+    }
+  end
 end
