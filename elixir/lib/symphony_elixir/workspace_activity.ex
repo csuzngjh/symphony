@@ -3,6 +3,7 @@ defmodule SymphonyElixir.WorkspaceActivity do
 
   @skip_dirs MapSet.new(~w(node_modules .git _build deps .elixir_ls))
   @max_scan_depth 3
+  @git_cmd_timeout_ms 5_000
 
   @spec scan_workspace_activity(Path.t(), DateTime.t() | nil) ::
           {:active, DateTime.t()} | {:stale, nil}
@@ -47,9 +48,29 @@ defmodule SymphonyElixir.WorkspaceActivity do
   end
 
   defp git_cmd(workspace_path, args) do
-    case System.cmd("git", args, cd: workspace_path, stderr_to_stdout: true) do
-      {output, 0} -> String.split(output, "\n", trim: true)
-      {_output, _} -> []
+    parent = self()
+    ref = make_ref()
+
+    pid = spawn(fn ->
+      result =
+        try do
+          case System.cmd("git", args, cd: workspace_path, stderr_to_stdout: true) do
+            {output, 0} -> String.split(output, "\n", trim: true)
+            {_output, _} -> []
+          end
+        rescue
+          _ -> []
+        end
+
+      send(parent, {ref, result})
+    end)
+
+    receive do
+      {^ref, result} -> result
+    after
+      @git_cmd_timeout_ms ->
+        Process.exit(pid, :kill)
+        []
     end
   rescue
     _ -> []
@@ -77,7 +98,7 @@ defmodule SymphonyElixir.WorkspaceActivity do
 
   defp collect_mtimes(paths) do
     Enum.flat_map(paths, fn path ->
-      case File.stat(path) do
+      case File.stat(path, time: :local) do
         {:ok, %File.Stat{mtime: mtime}} -> [erlang_datetime_to_datetime(mtime)]
         {:error, _} -> []
       end
@@ -94,7 +115,17 @@ defmodule SymphonyElixir.WorkspaceActivity do
   defp max_datetime(mtimes), do: Enum.max(mtimes, DateTime)
 
   defp erlang_datetime_to_datetime({{year, month, day}, {hour, min, sec}}) do
-    {:ok, naive} = NaiveDateTime.new(year, month, day, hour, min, sec)
-    DateTime.from_naive!(naive, "Etc/UTC")
+    local_erl = {{year, month, day}, {hour, min, sec}}
+
+    case :calendar.local_time_to_universal_time_dst(local_erl) do
+      [utc_erl | _] ->
+        {{y, m, d}, {h, mi, s}} = utc_erl
+        {:ok, naive} = NaiveDateTime.new(y, m, d, h, mi, s)
+        DateTime.from_naive!(naive, "Etc/UTC")
+
+      [] ->
+        {:ok, naive} = NaiveDateTime.new(year, month, day, hour, min, sec)
+        DateTime.from_naive!(naive, "Etc/UTC")
+    end
   end
 end

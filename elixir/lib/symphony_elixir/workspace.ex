@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.{Config, PathSafety, ShellResolution, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
+  @git_cmd_timeout_ms 5_000
 
   @type worker_host :: String.t() | nil
 
@@ -152,7 +153,7 @@ defmodule SymphonyElixir.Workspace do
         {:unknown, []}
 
       true ->
-        case System.cmd("git", ["-C", workspace_path, "status", "--porcelain"],
+        case git_cmd_with_timeout(["-C", workspace_path, "status", "--porcelain"],
                stderr_to_stdout: true,
                cd: workspace_path
              ) do
@@ -172,6 +173,9 @@ defmodule SymphonyElixir.Workspace do
 
           {_output, _status} ->
             {:unknown, []}
+
+          nil ->
+            {:unknown, []}
         end
     end
   rescue
@@ -180,6 +184,30 @@ defmodule SymphonyElixir.Workspace do
 
   def dirty_files(_workspace_path, worker_host) when is_binary(worker_host) do
     {:unknown, []}
+  end
+
+  defp git_cmd_with_timeout(args, opts) do
+    parent = self()
+    ref = make_ref()
+
+    pid = spawn(fn ->
+      result =
+        try do
+          System.cmd("git", args, opts)
+        rescue
+          _ -> nil
+        end
+
+      send(parent, {ref, result})
+    end)
+
+    receive do
+      {^ref, result} -> result
+    after
+      @git_cmd_timeout_ms ->
+        Process.exit(pid, :kill)
+        nil
+    end
   end
 
   defp parse_git_status_path(line) do
