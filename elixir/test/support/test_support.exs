@@ -8,7 +8,29 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   def symlink_supported? do
-    match?({:unix, _}, :os.type())
+    case :os.type() do
+      {:unix, _} -> true
+      {:win32, _} -> probe_symlink_on_windows()
+    end
+  end
+
+  defp probe_symlink_on_windows do
+    test_dir = Path.join(System.tmp_dir!(), "symphony-symlink-probe-#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(test_dir)
+      target = Path.join(test_dir, "target")
+      link = Path.join(test_dir, "link")
+      File.mkdir_p!(target)
+      case File.ln_s(target, link) do
+        :ok -> true
+        {:error, _} -> false
+      end
+    rescue
+      _ -> false
+    after
+      File.rm_rf(test_dir)
+    end
   end
 
   def read_text_normalized(path) do
@@ -102,7 +124,13 @@ defmodule SymphonyElixir.TestSupport do
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
-        if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+        if Process.whereis(SymphonyElixir.WorkflowStore) do
+          try do
+            SymphonyElixir.WorkflowStore.force_reload()
+          catch
+            :exit, _reason -> :ok
+          end
+        end
         stop_default_http_server()
 
         on_exit(fn ->
@@ -137,25 +165,31 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, value), do: System.put_env(key, value)
 
   def stop_default_http_server do
-    case Supervisor.which_children(SymphonyElixir.Supervisor) do
-      children when is_list(children) ->
-        case Enum.find(children, fn
-               {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
-               _child -> false
-             end) do
-          {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
-            if Process.alive?(pid) do
-              Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
-              Process.exit(pid, :normal)
+    if pid = Process.whereis(SymphonyElixir.Supervisor) do
+      if Process.alive?(pid) do
+        case Supervisor.which_children(SymphonyElixir.Supervisor) do
+          children when is_list(children) ->
+            case Enum.find(children, fn
+                   {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
+                   _child -> false
+                 end) do
+              {SymphonyElixir.HttpServer, child_pid, _type, _modules} when is_pid(child_pid) ->
+                if Process.alive?(child_pid) do
+                  Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
+                  Process.exit(child_pid, :normal)
+                end
+
+              _ ->
+                :ok
             end
 
           _ ->
             :ok
         end
-
-      _ ->
-        :ok
+      end
     end
+
+    :ok
   rescue
     _ -> :ok
   end
