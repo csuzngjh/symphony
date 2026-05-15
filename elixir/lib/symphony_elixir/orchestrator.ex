@@ -1159,20 +1159,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp workspace_dirty?(workspace_path, worker_host) do
-    case Workspace.dirty_files(workspace_path, worker_host) do
-      {:dirty, _files} -> true
-      _ -> false
-    end
-  end
-
-  defp dirty_files_list(workspace_path, worker_host) do
-    case Workspace.dirty_files(workspace_path, worker_host) do
-      {:dirty, files} -> files
-      _ -> []
-    end
-  end
-
   defp release_issue_claim(%State{} = state, issue_id) do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end

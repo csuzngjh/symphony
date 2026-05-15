@@ -2487,9 +2487,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       state_before = :sys.get_state(pid)
       assert Map.has_key?(state_before.blocked, issue_id)
 
-      Orchestrator.unblock_issue(state_before, issue_id)
-
-      state_after = :sys.get_state(pid)
+      state_after = Orchestrator.unblock_issue(state_before, issue_id)
       refute Map.has_key?(state_after.blocked, issue_id)
     end
 
@@ -2530,9 +2528,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       state_before = :sys.get_state(pid)
       assert MapSet.member?(state_before.claimed, issue_id)
 
-      Orchestrator.unblock_issue(state_before, issue_id)
-
-      state_after = :sys.get_state(pid)
+      state_after = Orchestrator.unblock_issue(state_before, issue_id)
       refute Map.has_key?(state_after.blocked, issue_id)
       assert MapSet.member?(state_after.claimed, issue_id)
     end
