@@ -157,6 +157,17 @@ defmodule SymphonyElixir.Orchestrator do
                     last_error: "stalled/terminated: #{inspect(reason)}"
                   }, DateTime.utc_now())
 
+                {:unknown, _} when workspace_path != nil ->
+                  Logger.warning("Issue blocked after stall: issue_id=#{issue_id} issue_identifier=#{identifier} workspace_path=#{workspace_path} reason=workspace_unknown")
+
+                  block_issue(state, issue_id, %{
+                    identifier: identifier,
+                    workspace_path: workspace_path,
+                    reason: "workspace_unknown_after_stall",
+                    dirty_files: [],
+                    last_error: "stalled/terminated: #{inspect(reason)}"
+                  }, DateTime.utc_now())
+
                 _ ->
                   next_attempt = next_retry_attempt_from_running(running_entry)
 
@@ -1080,41 +1091,71 @@ defmodule SymphonyElixir.Orchestrator do
     worker_host = metadata[:worker_host]
 
     cond do
-      workspace_path != nil and workspace_dirty?(workspace_path, worker_host) ->
-        blocked_state =
-          block_issue(
-            state,
-            issue.id,
-            %{
-              identifier: issue.identifier,
-              workspace_path: workspace_path,
-              reason: "workspace_dirty_on_retry",
-              dirty_files: dirty_files_list(workspace_path, worker_host),
-              last_error: metadata[:error]
-            },
-            DateTime.utc_now()
-          )
+      workspace_path != nil ->
+        case Workspace.dirty_files(workspace_path, worker_host) do
+          {:dirty, dirty_files} ->
+            blocked_state =
+              block_issue(
+                state,
+                issue.id,
+                %{
+                  identifier: issue.identifier,
+                  workspace_path: workspace_path,
+                  reason: "workspace_dirty_on_retry",
+                  dirty_files: dirty_files,
+                  last_error: metadata[:error]
+                },
+                DateTime.utc_now()
+              )
 
-        {:noreply, blocked_state}
+            {:noreply, blocked_state}
 
-      retry_candidate_issue?(issue, terminal_state_set()) and
-          dispatch_slots_available?(issue, state) and
-          worker_slots_available?(state, worker_host) ->
-        {:noreply, dispatch_issue(state, issue, attempt, worker_host)}
+          {:unknown, _} ->
+            blocked_state =
+              block_issue(
+                state,
+                issue.id,
+                %{
+                  identifier: issue.identifier,
+                  workspace_path: workspace_path,
+                  reason: "workspace_unknown_after_retry",
+                  dirty_files: [],
+                  last_error: metadata[:error]
+                },
+                DateTime.utc_now()
+              )
+
+            {:noreply, blocked_state}
+
+          {:clean, _} ->
+            maybe_dispatch_or_retry(state, issue, attempt, metadata)
+        end
 
       true ->
-        Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+        maybe_dispatch_or_retry(state, issue, attempt, metadata)
+    end
+  end
 
-        {:noreply,
-         schedule_issue_retry(
-           state,
-           issue.id,
-           attempt + 1,
-           Map.merge(metadata, %{
-             identifier: issue.identifier,
-             error: "no available orchestrator slots"
-           })
-         )}
+  defp maybe_dispatch_or_retry(state, issue, attempt, metadata) do
+    worker_host = metadata[:worker_host]
+
+    if retry_candidate_issue?(issue, terminal_state_set()) and
+       dispatch_slots_available?(issue, state) and
+       worker_slots_available?(state, worker_host) do
+      {:noreply, dispatch_issue(state, issue, attempt, worker_host)}
+    else
+      Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+
+      {:noreply,
+       schedule_issue_retry(
+         state,
+         issue.id,
+         attempt + 1,
+         Map.merge(metadata, %{
+           identifier: issue.identifier,
+           error: "no available orchestrator slots"
+         })
+       )}
     end
   end
 

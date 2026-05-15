@@ -2450,6 +2450,94 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
   end
 
+  describe "unblock_issue/2" do
+    test "removes issue from blocked map" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :UnblockOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-unblock-test"
+
+      initial_state = :sys.get_state(pid)
+
+      blocked_entry = %{
+        identifier: "MT-UNBLOCK",
+        workspace_path: "/tmp/ws/MT-UNBLOCK",
+        reason: "workspace_dirty",
+        dirty_files: ["lib/foo.ex"],
+        last_error: "exit code 1",
+        blocked_at: DateTime.utc_now()
+      }
+
+      state_with_blocked =
+        initial_state
+        |> Map.put(:blocked, %{issue_id => blocked_entry})
+
+      :sys.replace_state(pid, fn _ -> state_with_blocked end)
+
+      state_before = :sys.get_state(pid)
+      assert Map.has_key?(state_before.blocked, issue_id)
+
+      Orchestrator.unblock_issue(state_before, issue_id)
+
+      state_after = :sys.get_state(pid)
+      refute Map.has_key?(state_after.blocked, issue_id)
+    end
+
+    test "does not affect claimed map" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :UnblockClaimedOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-unblock-claimed"
+
+      initial_state = :sys.get_state(pid)
+
+      blocked_entry = %{
+        identifier: "MT-UNBLOCK-CLAIMED",
+        workspace_path: "/tmp/ws/MT-UNBLOCK-CLAIMED",
+        reason: "workspace_dirty",
+        dirty_files: [],
+        last_error: "exit",
+        blocked_at: DateTime.utc_now()
+      }
+
+      state_with_both =
+        initial_state
+        |> Map.put(:blocked, %{issue_id => blocked_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+
+      :sys.replace_state(pid, fn _ -> state_with_both end)
+
+      state_before = :sys.get_state(pid)
+      assert MapSet.member?(state_before.claimed, issue_id)
+
+      Orchestrator.unblock_issue(state_before, issue_id)
+
+      state_after = :sys.get_state(pid)
+      refute Map.has_key?(state_after.blocked, issue_id)
+      assert MapSet.member?(state_after.claimed, issue_id)
+    end
+  end
+
   describe "workspace activity scan in tick cycle (Task 10)" do
     test "workspace mtime changes update last_workspace_activity_at in running entry" do
       if git_available?() do

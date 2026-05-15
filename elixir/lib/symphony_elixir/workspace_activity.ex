@@ -1,4 +1,5 @@
 defmodule SymphonyElixir.WorkspaceActivity do
+  require Logger
   @moduledoc false
 
   @skip_dirs MapSet.new(~w(node_modules .git _build deps .elixir_ls))
@@ -13,7 +14,9 @@ defmodule SymphonyElixir.WorkspaceActivity do
       mtime -> {:active, mtime}
     end
   rescue
-    _ -> {:stale, nil}
+    e ->
+      Logger.error("scan_workspace_activity failed for #{workspace_path}: #{Exception.message(e)}")
+      {:stale, nil}
   end
 
   @spec last_activity_mtime(Path.t(), DateTime.t() | nil) :: DateTime.t() | nil
@@ -25,7 +28,9 @@ defmodule SymphonyElixir.WorkspaceActivity do
       true -> directory_activity_mtime(workspace_path, since)
     end
   rescue
-    _ -> nil
+    e ->
+      Logger.error("last_activity_mtime failed for #{workspace_path}: #{Exception.message(e)}")
+      nil
   end
 
   defp git_activity_mtime(workspace_path, since) do
@@ -70,10 +75,13 @@ defmodule SymphonyElixir.WorkspaceActivity do
     after
       @git_cmd_timeout_ms ->
         Process.exit(pid, :kill)
+        Logger.warning("git command timed out after #{@git_cmd_timeout_ms}ms in workspace #{workspace_path}")
         []
     end
   rescue
-    _ -> []
+    e ->
+      Logger.error("git_cmd failed in workspace #{workspace_path}: #{Exception.message(e)}")
+      []
   end
 
   defp walk_dir(_dir, depth) when depth > @max_scan_depth, do: []

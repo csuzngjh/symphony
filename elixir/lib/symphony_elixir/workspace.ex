@@ -174,15 +174,19 @@ defmodule SymphonyElixir.Workspace do
               {:dirty, files}
             end
 
-          {_output, _status} ->
+          {_output, status} ->
+            Logger.warning("git status returned non-zero status #{status} for workspace #{workspace_path}")
             {:unknown, []}
 
           nil ->
+            Logger.warning("git status timed out for workspace #{workspace_path}")
             {:unknown, []}
         end
     end
   rescue
-    _ -> {:unknown, []}
+    e ->
+      Logger.error("dirty_files check failed for #{workspace_path}: #{Exception.message(e)}")
+      {:unknown, []}
   end
 
   def dirty_files(_workspace_path, worker_host) when is_binary(worker_host) do
@@ -209,6 +213,7 @@ defmodule SymphonyElixir.Workspace do
     after
       @git_cmd_timeout_ms ->
         Process.exit(pid, :kill)
+        Logger.warning("git command timed out after #{@git_cmd_timeout_ms}ms: git #{inspect(args)} in workspace #{inspect(opts[:cd])}")
         nil
     end
   end
