@@ -1,10 +1,10 @@
 ```text
 ╭─ SYMPHONY STATUS
-│ Agents: 1/10
-│ Throughput: 42 tps
-│ Runtime: 1m 15s
-│ Tokens: in 90 | out 12 | total 102
-│ Rate Limits: priority-tier | primary 100/100 reset 1s | secondary 500/500 reset 1s | credits unlimited
+│ Agents: 0/10
+│ Throughput: 0 tps
+│ Runtime: 0m 0s
+│ Tokens: in 0 | out 0 | total 0
+│ Rate Limits: unavailable
 │ Project: https://linear.app/project/project/issues
 │ Dashboard: http://127.0.0.1:4000/
 │ Next refresh: n/a
@@ -12,13 +12,14 @@
 │
 │    ID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                 
 │    ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ●● MT-777   running        n/a      0m 0s / 7         3,200 thre...567890  thread token usage updated (in 90, ...
+│  No active agents
 │
 ├─ Backoff queue
 │
 │  No queued retries
 ├─ Blocked
 │
-│  No blocked issues
+│  • MT-300 — dirty workspace — /tmp/ws/MT-300
+│  • MT-301 — unresolved merge conflict — /tmp/ws/MT-301
 ╰─
 ```

@@ -13,6 +13,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
        %{
          running: [],
          retrying: [],
+         blocked: [],
 agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
           rate_limits: nil
         }}
@@ -38,6 +39,7 @@ agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_runn
        %{
          running: [],
          retrying: [],
+         blocked: [],
          agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
          rate_limits: nil
        }}
@@ -70,6 +72,7 @@ agent_total_tokens: 120_450,
            })
          ],
          retrying: [],
+         blocked: [],
 agent_totals: %{
             input_tokens: 250_000,
             output_tokens: 18_500,
@@ -129,6 +132,7 @@ agent_total_tokens: 14_200,
            })
          ],
          agent_totals: %{input_tokens: 18_000, output_tokens: 2_200, total_tokens: 20_200, seconds_running: 2_700},
+         blocked: [],
          rate_limits: %{
            limit_id: "gpt-5",
            primary: %{remaining: 0, limit: 20_000, reset_in_seconds: 95},
@@ -153,6 +157,7 @@ agent_total_tokens: 14_200,
              error: "error with \\nnewline"
            })
          ],
+         blocked: [],
          agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
          rate_limits: nil
        }}
@@ -184,6 +189,7 @@ agent_total_tokens: 3_200,
            })
          ],
          retrying: [],
+         blocked: [],
          agent_totals: %{input_tokens: 90, output_tokens: 12, total_tokens: 102, seconds_running: 75},
          rate_limits: %{
            limit_id: "priority-tier",
@@ -194,6 +200,100 @@ agent_total_tokens: 3_200,
        }}
 
     Snapshot.assert_dashboard_snapshot!("credits_unlimited", render_snapshot(snapshot_data, 42.0))
+  end
+
+  test "snapshot fixture: blocked issues" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         blocked: [
+           blocked_entry(%{
+             identifier: "MT-300",
+             reason: "dirty workspace",
+             workspace_path: "/tmp/ws/MT-300"
+           }),
+           blocked_entry(%{
+             identifier: "MT-301",
+             reason: "unresolved merge conflict",
+             workspace_path: "/tmp/ws/MT-301"
+           })
+         ],
+         agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    Snapshot.assert_dashboard_snapshot!("blocked", render_snapshot(snapshot_data, 0.0))
+  end
+
+  test "blocked section renders identifier, reason, and workspace_path" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         blocked: [
+           blocked_entry(%{
+             identifier: "MT-500",
+             reason: "dirty workspace",
+             workspace_path: "/tmp/ws/MT-500"
+           })
+         ],
+         agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+
+    assert rendered =~ "Blocked"
+    assert rendered =~ "MT-500"
+    assert rendered =~ "dirty workspace"
+    assert rendered =~ "/tmp/ws/MT-500"
+  end
+
+  test "running row with progress_source workspace_activity shows workspace activity indicator" do
+    entry = running_entry(%{
+      identifier: "MT-900",
+      progress_source: "workspace_activity"
+    })
+
+    rendered = StatusDashboard.format_running_summary_for_test(entry, @terminal_columns)
+
+    assert rendered =~ "◉"
+  end
+
+  test "running row with progress_source process_alive shows process alive indicator" do
+    entry = running_entry(%{
+      identifier: "MT-901",
+      progress_source: "process_alive"
+    })
+
+    rendered = StatusDashboard.format_running_summary_for_test(entry, @terminal_columns)
+
+    assert rendered =~ "◎"
+  end
+
+  test "running row with progress_source none shows no-progress indicator" do
+    entry = running_entry(%{
+      identifier: "MT-902",
+      progress_source: "none"
+    })
+
+    rendered = StatusDashboard.format_running_summary_for_test(entry, @terminal_columns)
+
+    assert rendered =~ "○"
+  end
+
+  test "running row with progress_source raw_event shows default indicator" do
+    entry = running_entry(%{
+      identifier: "MT-903",
+      progress_source: "raw_event"
+    })
+
+    rendered = StatusDashboard.format_running_summary_for_test(entry, @terminal_columns)
+
+    assert rendered =~ "●"
   end
 
   defp render_snapshot(snapshot_data, tps) do
@@ -211,7 +311,8 @@ agent_total_tokens: 3_200,
         runtime_seconds: 0,
         turn_count: 1,
         last_agent_event: :notification,
-        last_agent_message: turn_started_message()
+        last_agent_message: turn_started_message(),
+        progress_source: "raw_event"
       },
       overrides
     )
@@ -225,6 +326,21 @@ agent_total_tokens: 3_200,
         attempt: 1,
         due_in_ms: 1_000,
         error: "retry scheduled"
+      },
+      overrides
+    )
+  end
+
+  defp blocked_entry(overrides) do
+    Map.merge(
+      %{
+        issue_id: "issue-1",
+        identifier: "MT-000",
+        reason: "unknown",
+        workspace_path: "/tmp/ws/MT-000",
+        dirty_files: [],
+        last_error: nil,
+        blocked_at: DateTime.utc_now()
       },
       overrides
     )

@@ -140,6 +140,60 @@ defmodule SymphonyElixir.Workspace do
       {:error, {:workspace_reuse_check_failed, workspace, Exception.message(e)}}
   end
 
+  @spec dirty_files(Path.t(), worker_host()) :: {:dirty, [String.t()]} | {:clean, []} | {:unknown, []}
+  def dirty_files(workspace_path, nil) do
+    git_dir = Path.join(workspace_path, ".git")
+
+    cond do
+      not File.dir?(workspace_path) ->
+        {:unknown, []}
+
+      not File.dir?(git_dir) ->
+        {:unknown, []}
+
+      true ->
+        case System.cmd("git", ["-C", workspace_path, "status", "--porcelain"],
+               stderr_to_stdout: true,
+               cd: workspace_path
+             ) do
+          {output, 0} ->
+            trimmed = String.trim(output)
+
+            if trimmed == "" do
+              {:clean, []}
+            else
+              files =
+                trimmed
+                |> String.split("\n", trim: true)
+                |> Enum.map(&parse_git_status_path/1)
+
+              {:dirty, files}
+            end
+
+          {_output, _status} ->
+            {:unknown, []}
+        end
+    end
+  rescue
+    _ -> {:unknown, []}
+  end
+
+  def dirty_files(_workspace_path, worker_host) when is_binary(worker_host) do
+    {:unknown, []}
+  end
+
+  defp parse_git_status_path(line) do
+    case String.split(line, " -> ", parts: 2) do
+      [_old, new_path] ->
+        new_path
+
+      _ ->
+        line
+        |> String.slice(3..-1//1)
+        |> String.trim()
+    end
+  end
+
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
   def remove(workspace), do: remove(workspace, nil)
 

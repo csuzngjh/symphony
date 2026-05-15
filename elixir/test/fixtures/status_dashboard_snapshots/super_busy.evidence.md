@@ -10,13 +10,16 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  
-│   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ● MT-002   running        n/a      0m 0s / 2        89,200 thre...567890  mix test --cover                       
-│ ● MT-101   running        n/a      0m 0s / 4       120,450 thre...567890  turn completed (completed)             
+│    ID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                 
+│    ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│ ●● MT-002   running        n/a      0m 0s / 2        89,200 thre...567890  mix test --cover                      
+│ ●● MT-101   running        n/a      0m 0s / 4       120,450 thre...567890  turn completed (completed)            
 │
 ├─ Backoff queue
 │
 │  No queued retries
+├─ Blocked
+│
+│  No blocked issues
 ╰─
 ```

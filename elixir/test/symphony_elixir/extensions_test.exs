@@ -342,7 +342,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1},
+             "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 0},
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -362,6 +362,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_raw_preview" => nil,
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
+                 "progress_source" => "none",
+                 "last_progress_at" => nil,
+                 "last_workspace_activity_at" => nil,
+                 "process_alive" => false,
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
@@ -376,6 +380,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "workspace_path" => nil
                }
              ],
+             "blocked" => [],
              "agent_totals" => %{
                "input_tokens" => 4,
                "output_tokens" => 8,
@@ -407,8 +412,13 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
+               "progress_source" => "none",
+               "last_progress_at" => nil,
+               "last_workspace_activity_at" => nil,
+               "process_alive" => false,
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
+             "blocked" => nil,
              "retry" => nil,
              "logs" => %{"agent_session_logs" => []},
              "recent_events" => [],
@@ -647,7 +657,7 @@ turn_count: 8,
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1}
+    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "blocked" => 0}
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
@@ -718,7 +728,8 @@ turn_count: 7,
         }
       ],
       agent_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
-      rate_limits: %{"primary" => %{"remaining" => 11}}
+      rate_limits: %{"primary" => %{"remaining" => 11}},
+      blocked: []
     }
   end
 

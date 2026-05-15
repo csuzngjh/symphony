@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace, WorkspaceActivity}
   alias SymphonyElixir.Linear.Issue
 
   @default_continuation_retry_delay_ms 300_000
@@ -41,7 +41,8 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       agent_totals: nil,
-      agent_rate_limits: nil
+      agent_rate_limits: nil,
+      blocked: %{}
     ]
   end
 
@@ -141,16 +142,33 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           cond do
             status == :terminating ->
-              next_attempt = next_retry_attempt_from_running(running_entry)
+              workspace_path = Map.get(running_entry, :workspace_path)
+              identifier = running_entry.identifier
 
-              Logger.warning("Terminated attempt confirmed dead for issue_id=#{issue_id} session_id=#{session_id}; scheduling retry")
+              case check_workspace_dirty(workspace_path, Map.get(running_entry, :worker_host)) do
+                {:dirty, dirty_files} ->
+                  Logger.warning("Issue blocked after stall: issue_id=#{issue_id} issue_identifier=#{identifier} workspace_path=#{workspace_path} dirty_files=#{inspect(dirty_files)}")
 
-              schedule_issue_retry(state, issue_id, next_attempt, %{
-                identifier: running_entry.identifier,
-                error: "stalled/terminated: #{inspect(reason)}",
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+                  block_issue(state, issue_id, %{
+                    identifier: identifier,
+                    workspace_path: workspace_path,
+                    reason: "workspace_dirty_after_stall",
+                    dirty_files: dirty_files,
+                    last_error: "stalled/terminated: #{inspect(reason)}"
+                  }, DateTime.utc_now())
+
+                _ ->
+                  next_attempt = next_retry_attempt_from_running(running_entry)
+
+                  Logger.warning("Terminated attempt confirmed dead for issue_id=#{issue_id} session_id=#{session_id}; scheduling retry")
+
+                  schedule_issue_retry(state, issue_id, next_attempt, %{
+                    identifier: identifier,
+                    error: "stalled/terminated: #{inspect(reason)}",
+                    worker_host: Map.get(running_entry, :worker_host),
+                    workspace_path: workspace_path
+                  })
+              end
 
             reason == :normal ->
               Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
@@ -496,59 +514,133 @@ defmodule SymphonyElixir.Orchestrator do
         now = DateTime.utc_now()
 
         Enum.reduce(state.running, state, fn {issue_id, running_entry}, state_acc ->
+          state_acc = maybe_update_workspace_activity(state_acc, issue_id, running_entry)
+          running_entry = Map.get(state_acc.running, issue_id)
+          state_acc = maybe_update_process_alive(state_acc, issue_id, running_entry)
+          running_entry = Map.get(state_acc.running, issue_id)
           restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
         end)
     end
   end
 
-  defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    elapsed_ms = stall_elapsed_ms(running_entry, now)
+  defp maybe_update_workspace_activity(state, issue_id, running_entry) do
+    workspace_path = Map.get(running_entry, :workspace_path)
 
-    if is_integer(elapsed_ms) and elapsed_ms > timeout_ms do
-      identifier = Map.get(running_entry, :identifier, issue_id)
-      session_id = running_entry_session_id(running_entry)
+    if is_binary(workspace_path) and workspace_path != "" do
+      case WorkspaceActivity.scan_workspace_activity(workspace_path, Map.get(running_entry, :last_workspace_activity_at)) do
+        {:active, mtime} ->
+          updated =
+            running_entry
+            |> Map.put(:last_workspace_activity_at, mtime)
+            |> Map.put(:progress_source, update_progress_source(Map.put(running_entry, :last_workspace_activity_at, mtime)))
 
-      if Map.get(running_entry, :status) == :terminating do
-        Logger.warning("Issue already terminating: issue_id=#{issue_id} issue_identifier=#{identifier}; waiting for shutdown")
-        state
-      else
-        Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; terminating attempt")
+          %{state | running: Map.put(state.running, issue_id, updated)}
 
-        pid = Map.get(running_entry, :pid)
-
-        if is_pid(pid) do
-          terminate_task(pid)
-        end
-
-        terminating_entry =
-          running_entry
-          |> Map.put(:status, :terminating)
-          |> Map.put(:force_kill_timer_ref, Process.send_after(self(), {:force_kill_attempt, issue_id}, @attempt_shutdown_timeout_ms))
-
-        %{state | running: Map.put(state.running, issue_id, terminating_entry)}
+        {:stale, nil} ->
+          state
       end
     else
       state
     end
   end
 
-  defp stall_elapsed_ms(running_entry, now) do
-    running_entry
-    |> last_activity_timestamp()
-    |> case do
-      %DateTime{} = timestamp ->
-        max(0, DateTime.diff(now, timestamp, :millisecond))
+  defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
+    case stall_status(running_entry, now, timeout_ms) do
+      :not_stalled ->
+        state
 
-      _ ->
-        nil
+      :maybe_stalled ->
+        Logger.info("Agent process alive but no raw events or workspace activity for issue_id=#{issue_id}; extending observation")
+        state
+
+      :stalled ->
+        identifier = Map.get(running_entry, :identifier, issue_id)
+        session_id = running_entry_session_id(running_entry)
+
+        if Map.get(running_entry, :status) == :terminating do
+          Logger.warning("Issue already terminating: issue_id=#{issue_id} issue_identifier=#{identifier}; waiting for shutdown")
+          state
+        else
+          Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id}; terminating attempt")
+
+          pid = Map.get(running_entry, :pid)
+
+          if is_pid(pid) do
+            terminate_task(pid)
+          end
+
+          terminating_entry =
+            running_entry
+            |> Map.put(:status, :terminating)
+            |> Map.put(:force_kill_timer_ref, Process.send_after(self(), {:force_kill_attempt, issue_id}, @attempt_shutdown_timeout_ms))
+
+          %{state | running: Map.put(state.running, issue_id, terminating_entry)}
+        end
     end
   end
 
-  defp last_activity_timestamp(running_entry) when is_map(running_entry) do
-    Map.get(running_entry, :last_agent_timestamp) || Map.get(running_entry, :started_at)
+  defp maybe_update_process_alive(state, issue_id, running_entry) do
+    pid = Map.get(running_entry, :pid)
+
+    if is_pid(pid) and Process.alive?(pid) do
+      now = DateTime.utc_now()
+      with_seen = Map.put(running_entry, :last_process_seen_at, now)
+      updated = Map.put(with_seen, :progress_source, update_progress_source(with_seen))
+      %{state | running: Map.put(state.running, issue_id, updated)}
+    else
+      state
+    end
   end
 
-  defp last_activity_timestamp(_running_entry), do: nil
+  defp stall_status(running_entry, now, timeout_ms) do
+    raw_event_at = Map.get(running_entry, :last_raw_event_at)
+    workspace_activity_at = Map.get(running_entry, :last_workspace_activity_at)
+    _process_seen_at = Map.get(running_entry, :last_process_seen_at)
+    started_at = Map.get(running_entry, :started_at)
+    started_elapsed = elapsed_since(started_at, now)
+
+    cond do
+      fresh_within?(raw_event_at, now, timeout_ms) ->
+        :not_stalled
+
+      fresh_within?(workspace_activity_at, now, timeout_ms) ->
+        :not_stalled
+
+      process_alive_with_recent_seen?(running_entry, now, timeout_ms) and started_elapsed <= timeout_ms * 3 ->
+        :maybe_stalled
+
+      started_elapsed > timeout_ms ->
+        :stalled
+
+      true ->
+        :not_stalled
+    end
+  end
+
+  defp fresh_within?(nil, _now, _timeout_ms), do: false
+
+  defp fresh_within?(timestamp, now, timeout_ms) when is_struct(timestamp, DateTime) do
+    DateTime.diff(now, timestamp, :millisecond) <= timeout_ms
+  end
+
+  defp fresh_within?(_, _, _), do: false
+
+  defp process_alive_with_recent_seen?(running_entry, now, timeout_ms) do
+    pid = Map.get(running_entry, :pid)
+    process_seen_at = Map.get(running_entry, :last_process_seen_at)
+
+    is_pid(pid) and Process.alive?(pid) and
+      is_struct(process_seen_at, DateTime) and
+      DateTime.diff(now, process_seen_at, :millisecond) <= timeout_ms * 2
+  end
+
+  defp elapsed_since(nil, _now), do: 0
+
+  defp elapsed_since(timestamp, now) when is_struct(timestamp, DateTime) do
+    DateTime.diff(now, timestamp, :millisecond)
+  end
+
+  defp elapsed_since(_, _), do: 0
 
   defp terminate_task(pid) when is_pid(pid) do
     case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
@@ -599,12 +691,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
-         %State{running: running, claimed: claimed} = state,
+         %State{running: running, claimed: claimed, blocked: blocked} = state,
          active_states,
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+      !Map.has_key?(blocked, issue.id) and
       !MapSet.member?(claimed, issue.id) and
       !issue_has_active_or_terminating_attempt?(running, issue.id) and
       available_slots(state) > 0 and
@@ -784,7 +877,10 @@ defmodule SymphonyElixir.Orchestrator do
             agent_last_reported_cached_write_tokens: 0,
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now()
+            started_at: DateTime.utc_now(),
+            last_workspace_activity_at: nil,
+            last_process_seen_at: nil,
+            progress_source: "none"
           })
 
         %{
@@ -914,6 +1010,10 @@ defmodule SymphonyElixir.Orchestrator do
     terminal_states = terminal_state_set()
 
     cond do
+      Map.has_key?(state.blocked, issue_id) ->
+        Logger.debug("Issue is blocked, skipping retry: issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
+        {:noreply, release_issue_claim(state, issue_id)}
+
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
@@ -965,28 +1065,96 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
-    if retry_candidate_issue?(issue, terminal_state_set()) and
-         dispatch_slots_available?(issue, state) and
-         worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
-    else
-      Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+    workspace_path = metadata[:workspace_path]
+    worker_host = metadata[:worker_host]
 
-      {:noreply,
-       schedule_issue_retry(
-         state,
-         issue.id,
-         attempt + 1,
-         Map.merge(metadata, %{
-           identifier: issue.identifier,
-           error: "no available orchestrator slots"
-         })
-       )}
+    cond do
+      workspace_path != nil and workspace_dirty?(workspace_path, worker_host) ->
+        blocked_state =
+          block_issue(
+            state,
+            issue.id,
+            %{
+              identifier: issue.identifier,
+              workspace_path: workspace_path,
+              reason: "workspace_dirty_on_retry",
+              dirty_files: dirty_files_list(workspace_path, worker_host),
+              last_error: metadata[:error]
+            },
+            DateTime.utc_now()
+          )
+
+        {:noreply, blocked_state}
+
+      retry_candidate_issue?(issue, terminal_state_set()) and
+          dispatch_slots_available?(issue, state) and
+          worker_slots_available?(state, worker_host) ->
+        {:noreply, dispatch_issue(state, issue, attempt, worker_host)}
+
+      true ->
+        Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt + 1,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "no available orchestrator slots"
+           })
+         )}
+    end
+  end
+
+  defp workspace_dirty?(workspace_path, worker_host) do
+    case Workspace.dirty_files(workspace_path, worker_host) do
+      {:dirty, _files} -> true
+      _ -> false
+    end
+  end
+
+  defp dirty_files_list(workspace_path, worker_host) do
+    case Workspace.dirty_files(workspace_path, worker_host) do
+      {:dirty, files} -> files
+      _ -> []
     end
   end
 
   defp release_issue_claim(%State{} = state, issue_id) do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+  end
+
+  @spec block_issue(State.t(), String.t(), map(), DateTime.t()) :: State.t()
+  def block_issue(%State{} = state, issue_id, metadata, blocked_at) when is_binary(issue_id) and is_map(metadata) do
+    %{
+      identifier: identifier,
+      workspace_path: workspace_path,
+      reason: reason,
+      dirty_files: dirty_files,
+      last_error: last_error
+    } = metadata
+
+    Logger.info(
+      "Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} reason=#{reason} workspace_path=#{workspace_path} dirty_files=#{inspect(dirty_files)}"
+    )
+
+    state
+    |> Map.put(:blocked, Map.put(state.blocked, issue_id, %{
+      identifier: identifier,
+      workspace_path: workspace_path,
+      reason: reason,
+      dirty_files: dirty_files,
+      last_error: last_error,
+      blocked_at: blocked_at
+    }))
+    |> release_issue_claim(issue_id)
+    |> Map.put(:retry_attempts, Map.delete(state.retry_attempts, issue_id))
+  end
+
+  @spec unblock_issue(State.t(), String.t()) :: State.t()
+  def unblock_issue(%State{} = state, issue_id) when is_binary(issue_id) do
+    %{state | blocked: Map.delete(state.blocked, issue_id)}
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
@@ -1017,6 +1185,11 @@ defmodule SymphonyElixir.Orchestrator do
       attempt when is_integer(attempt) and attempt > 0 -> attempt + 1
       _ -> nil
     end
+  end
+
+  defp check_workspace_dirty(nil, _worker_host), do: {:unknown, []}
+  defp check_workspace_dirty(workspace_path, worker_host) when is_binary(workspace_path) do
+    Workspace.dirty_files(workspace_path, worker_host)
   end
 
   defp pick_retry_identifier(issue_id, previous_retry, metadata) do
@@ -1190,7 +1363,7 @@ defmodule SymphonyElixir.Orchestrator do
           phase: Map.get(metadata, :phase),
           last_raw_event_at: Map.get(metadata, :last_raw_event_at),
           last_raw_preview: Map.get(metadata, :last_raw_preview),
-          agent_session_pid: metadata.agent_session_pid,
+          agent_session_pid: Map.get(metadata, :agent_session_pid),
           agent_input_tokens: metadata.agent_input_tokens,
           agent_output_tokens: metadata.agent_output_tokens,
           agent_total_tokens: metadata.agent_total_tokens,
@@ -1201,6 +1374,10 @@ defmodule SymphonyElixir.Orchestrator do
           last_agent_timestamp: metadata.last_agent_timestamp,
           last_agent_message: metadata.last_agent_message,
           last_agent_event: metadata.last_agent_event,
+          progress_source: Map.get(metadata, :progress_source, "none"),
+          last_workspace_activity_at: Map.get(metadata, :last_workspace_activity_at),
+          last_process_seen_at: Map.get(metadata, :last_process_seen_at),
+          pid: Map.get(metadata, :pid),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1219,10 +1396,25 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    blocked =
+      state.blocked
+      |> Enum.map(fn {issue_id, entry} ->
+        %{
+          issue_id: issue_id,
+          identifier: entry.identifier,
+          workspace_path: entry.workspace_path,
+          reason: entry.reason,
+          dirty_files: entry.dirty_files,
+          last_error: entry.last_error,
+          blocked_at: entry.blocked_at
+        }
+      end)
+
     {:reply,
      %{
        running: running,
        retrying: retrying,
+       blocked: blocked,
        agent_totals: state.agent_totals,
        rate_limits: Map.get(state, :agent_rate_limits),
        polling: %{
@@ -1270,7 +1462,7 @@ defmodule SymphonyElixir.Orchestrator do
         _ -> {Map.get(running_entry, :phase), nil}
       end
 
-    {
+    merged =
       Map.merge(running_entry, %{
         last_agent_timestamp: timestamp,
         last_agent_message: summarize_agent_update(update),
@@ -1291,10 +1483,24 @@ defmodule SymphonyElixir.Orchestrator do
         agent_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
         agent_last_reported_cached_read_tokens: max(last_reported_cached_read, Map.get(token_delta, :cached_read_reported, 0)),
         agent_last_reported_cached_write_tokens: max(last_reported_cached_write, Map.get(token_delta, :cached_write_reported, 0)),
-        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
-      }),
-      token_delta
-    }
+        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update),
+        progress_source: update_progress_source(Map.merge(running_entry, %{
+          last_raw_event_at: Map.get(update, :raw_event_at) || Map.get(running_entry, :last_raw_event_at),
+          last_workspace_activity_at: Map.get(running_entry, :last_workspace_activity_at),
+          last_process_seen_at: Map.get(running_entry, :last_process_seen_at)
+        }))
+      })
+
+    {merged, token_delta}
+  end
+
+  defp update_progress_source(running_entry) do
+    cond do
+      Map.get(running_entry, :last_raw_event_at) != nil -> "raw_event"
+      Map.get(running_entry, :last_workspace_activity_at) != nil -> "workspace_activity"
+      Map.get(running_entry, :last_process_seen_at) != nil -> "process_alive"
+      true -> "none"
+    end
   end
 
   defp agent_session_pid_for_update(_existing, %{agent_session_pid: pid})
