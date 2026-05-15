@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.{Config, PathSafety, ShellResolution, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
+  @git_cmd_timeout_ms 5_000
 
   @type worker_host :: String.t() | nil
 
@@ -118,7 +119,7 @@ defmodule SymphonyElixir.Workspace do
     git_dir = Path.join(workspace, ".git")
 
     if File.dir?(git_dir) do
-      case System.cmd("git", ["-C", workspace, "status", "--porcelain"],
+      case git_cmd_with_timeout(["-C", workspace, "status", "--porcelain"],
              stderr_to_stdout: true,
              cd: workspace
            ) do
@@ -131,6 +132,9 @@ defmodule SymphonyElixir.Workspace do
 
         {output, _status} ->
           {:error, {:workspace_git_check_failed, workspace, output}}
+
+        nil ->
+          {:error, {:workspace_git_check_timeout, workspace, "git status timed out"}}
       end
     else
       {:error, {:workspace_not_git, workspace, "not a git repository"}}
@@ -138,6 +142,92 @@ defmodule SymphonyElixir.Workspace do
   rescue
     e ->
       {:error, {:workspace_reuse_check_failed, workspace, Exception.message(e)}}
+  end
+
+  @spec dirty_files(Path.t(), worker_host()) :: {:dirty, [String.t()]} | {:clean, []} | {:unknown, []}
+  def dirty_files(workspace_path, nil) do
+    git_dir = Path.join(workspace_path, ".git")
+
+    cond do
+      not File.dir?(workspace_path) ->
+        {:unknown, []}
+
+      not File.dir?(git_dir) ->
+        {:unknown, []}
+
+      true ->
+        case git_cmd_with_timeout(["-C", workspace_path, "status", "--porcelain"],
+               stderr_to_stdout: true,
+               cd: workspace_path
+             ) do
+          {output, 0} ->
+            trimmed = String.trim(output)
+
+            if trimmed == "" do
+              {:clean, []}
+            else
+              files =
+                trimmed
+                |> String.split("\n", trim: true)
+                |> Enum.map(&parse_git_status_path/1)
+
+              {:dirty, files}
+            end
+
+          {_output, status} ->
+            Logger.warning("git status returned non-zero status #{status} for workspace #{workspace_path}")
+            {:unknown, []}
+
+          nil ->
+            Logger.warning("git status timed out for workspace #{workspace_path}")
+            {:unknown, []}
+        end
+    end
+  rescue
+    e ->
+      Logger.error("dirty_files check failed for #{workspace_path}: #{Exception.message(e)}")
+      {:unknown, []}
+  end
+
+  def dirty_files(_workspace_path, worker_host) when is_binary(worker_host) do
+    {:unknown, []}
+  end
+
+  defp git_cmd_with_timeout(args, opts) do
+    parent = self()
+    ref = make_ref()
+
+    pid = spawn(fn ->
+      result =
+        try do
+          System.cmd("git", args, opts)
+        rescue
+          _ -> nil
+        end
+
+      send(parent, {ref, result})
+    end)
+
+    receive do
+      {^ref, result} -> result
+    after
+      @git_cmd_timeout_ms ->
+        Process.exit(pid, :kill)
+        Logger.warning("git command timed out after #{@git_cmd_timeout_ms}ms: git #{inspect(args)} in workspace #{inspect(opts[:cd])}")
+        nil
+    end
+  end
+
+  defp parse_git_status_path(line) do
+    case String.split(line, " -> ", parts: 2) do
+      [_old, new_path] ->
+        new_path
+
+      _ ->
+        line
+        |> String.slice(3..-1//1)
+        |> String.trim()
+    end
   end
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}

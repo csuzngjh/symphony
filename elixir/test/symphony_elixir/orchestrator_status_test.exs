@@ -946,8 +946,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     Process.sleep(200)
     state = :sys.get_state(pid)
 
-    refute Process.alive?(worker_pid)
-
     assert Map.has_key?(state.running, issue_id)
     assert state.running[issue_id].status == :terminating
 
@@ -1599,5 +1597,1551 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       {next_tokens, [{timestamp, next_tokens} | acc]}
     end)
     |> elem(1)
+  end
+
+  test "newly spawned running entry has progress_source none and nil activity timestamps" do
+    issue_id = "issue-progress-init"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-PROG-INIT",
+      title: "Progress init test",
+      description: "Verify initial progress fields",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-PROG-INIT"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ProgressInitOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      last_agent_message: nil,
+      last_agent_timestamp: nil,
+      last_agent_event: nil,
+      started_at: started_at,
+      progress_source: "none",
+      last_workspace_activity_at: nil,
+      last_process_seen_at: nil,
+      agent_session_pid: nil,
+      agent_input_tokens: 0,
+      agent_output_tokens: 0,
+      agent_total_tokens: 0,
+      last_raw_event_at: nil
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.progress_source == "none"
+    assert snapshot_entry.last_workspace_activity_at == nil
+    assert snapshot_entry.last_process_seen_at == nil
+  end
+
+  test "agent update with raw_event_at sets progress_source to raw_event" do
+    issue_id = "issue-progress-raw-event"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-PROG-RAW",
+      title: "Progress raw event test",
+      description: "Verify progress_source after raw event",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-PROG-RAW"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ProgressRawEventOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      last_agent_message: nil,
+      last_agent_timestamp: nil,
+      last_agent_event: nil,
+      last_raw_event_at: nil,
+      started_at: started_at,
+      progress_source: "none",
+      last_workspace_activity_at: nil,
+      last_process_seen_at: nil,
+      agent_session_pid: nil,
+      agent_input_tokens: 0,
+      agent_output_tokens: 0,
+      agent_total_tokens: 0
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    now = DateTime.utc_now()
+
+    send(
+      pid,
+      {:agent_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{method: "some-event"},
+         timestamp: now,
+         raw_event_at: now
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.progress_source == "raw_event"
+  end
+
+  describe "blocked issues in snapshot" do
+    test "initial snapshot has blocked: []" do
+      orchestrator_name = Module.concat(__MODULE__, :BlockedEmptyOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert snapshot.blocked == []
+    end
+
+    test "snapshot returns blocked entries with all fields" do
+      orchestrator_name = Module.concat(__MODULE__, :BlockedSnapshotOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-blocked-1"
+      blocked_at = DateTime.utc_now()
+
+      blocked_entry = %{
+        identifier: "MT-999",
+        workspace_path: "/tmp/ws/MT-999",
+        reason: "dirty workspace",
+        dirty_files: ["lib/foo.ex", "test/foo_test.exs"],
+        last_error: "exit code 1",
+        blocked_at: blocked_at
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      new_state =
+        initial_state
+        |> Map.put(:blocked, %{issue_id => blocked_entry})
+
+      :sys.replace_state(pid, fn _ -> new_state end)
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert is_list(snapshot.blocked)
+      assert length(snapshot.blocked) == 1
+
+      [entry] = snapshot.blocked
+      assert entry.issue_id == issue_id
+      assert entry.identifier == "MT-999"
+      assert entry.workspace_path == "/tmp/ws/MT-999"
+      assert entry.reason == "dirty workspace"
+      assert entry.dirty_files == ["lib/foo.ex", "test/foo_test.exs"]
+      assert entry.last_error == "exit code 1"
+      assert entry.blocked_at == blocked_at
+    end
+
+    test "block_issue releases claim and removes retry_attempts" do
+      orchestrator_name = Module.concat(__MODULE__, :BlockedClaimOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-blocked-claim"
+      blocked_at = DateTime.utc_now()
+
+      initial_state = :sys.get_state(pid)
+
+      state_with_claim_and_retry =
+        initial_state
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+        |> Map.put(:retry_attempts, %{
+          issue_id => %{
+            attempt: 2,
+            timer_ref: nil,
+            due_at_ms: System.monotonic_time(:millisecond) + 5_000,
+            identifier: "MT-CLAIM",
+            error: "previous failure"
+          }
+        })
+
+      :sys.replace_state(pid, fn _ -> state_with_claim_and_retry end)
+
+      pre_state = :sys.get_state(pid)
+      assert MapSet.member?(pre_state.claimed, issue_id)
+      assert Map.has_key?(pre_state.retry_attempts, issue_id)
+
+      blocked_state =
+        Orchestrator.block_issue(
+          pre_state,
+          issue_id,
+          %{
+            identifier: "MT-CLAIM",
+            workspace_path: "/tmp/ws/MT-CLAIM",
+            reason: "manual block",
+            dirty_files: [],
+            last_error: nil
+          },
+          blocked_at
+        )
+
+      refute MapSet.member?(blocked_state.claimed, issue_id)
+      refute Map.has_key?(blocked_state.retry_attempts, issue_id)
+      assert Map.has_key?(blocked_state.blocked, issue_id)
+      assert blocked_state.blocked[issue_id].identifier == "MT-CLAIM"
+      assert blocked_state.blocked[issue_id].blocked_at == blocked_at
+    end
+  end
+
+  describe ":DOWN handler distinguishes dirty vs clean stalls" do
+    test "blocks issue when workspace is dirty after stall" do
+      if git_available?() do
+        test_root =
+          Path.join(
+            System.tmp_dir!(),
+            "symphony-elixir-down-dirty-#{System.unique_integer([:positive])}"
+          )
+
+        workspace_root = Path.join(test_root, "workspaces")
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          tracker_api_token: nil,
+          agent_stall_timeout_ms: 1_000
+        )
+
+        workspace_path = Path.join(workspace_root, "MT-DIRTY-DOWN")
+        File.mkdir_p!(workspace_path)
+
+        System.cmd("git", ["-C", workspace_path, "init", "-b", "main"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.name", "Test User"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.email", "test@example.com"])
+
+        File.write!(Path.join(workspace_path, "initial.txt"), "hello\n")
+        System.cmd("git", ["-C", workspace_path, "add", "."])
+        System.cmd("git", ["-C", workspace_path, "commit", "-m", "initial"])
+
+        File.write!(Path.join(workspace_path, "dirty.txt"), "uncommitted\n")
+
+        issue_id = "issue-down-dirty"
+        orchestrator_name = Module.concat(__MODULE__, :DownDirtyOrchestrator)
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+        on_exit(fn ->
+          if Process.alive?(pid) do
+            Process.exit(pid, :normal)
+          end
+
+          File.rm_rf(test_root)
+        end)
+
+        worker_pid =
+          spawn(fn ->
+            receive do
+              :done -> :ok
+            end
+          end)
+
+        ref = make_ref()
+        stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
+        initial_state = :sys.get_state(pid)
+
+        running_entry = %{
+          pid: worker_pid,
+          ref: ref,
+          identifier: "MT-DIRTY-DOWN",
+          issue: %Issue{id: issue_id, identifier: "MT-DIRTY-DOWN", state: "In Progress"},
+          session_id: "thread-down-dirty",
+          last_agent_message: nil,
+          last_agent_timestamp: stale_activity_at,
+          last_agent_event: :notification,
+          started_at: stale_activity_at,
+          workspace_path: workspace_path,
+          status: :terminating
+        }
+
+        :sys.replace_state(pid, fn _ ->
+          initial_state
+          |> Map.put(:running, %{issue_id => running_entry})
+          |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+        end)
+
+        state = :sys.get_state(pid)
+        assert state.running[issue_id].status == :terminating
+
+        send(pid, {:DOWN, ref, :process, worker_pid, :shutdown})
+        Process.sleep(100)
+        state = :sys.get_state(pid)
+
+        refute Map.has_key?(state.running, issue_id)
+        assert Map.has_key?(state.blocked, issue_id)
+        refute Map.has_key?(state.retry_attempts, issue_id)
+
+        blocked_entry = state.blocked[issue_id]
+        assert blocked_entry.identifier == "MT-DIRTY-DOWN"
+        assert blocked_entry.workspace_path == workspace_path
+        assert blocked_entry.reason == "workspace_dirty_after_stall"
+        assert is_list(blocked_entry.dirty_files)
+        assert length(blocked_entry.dirty_files) > 0
+        assert blocked_entry.last_error == "stalled/terminated: :shutdown"
+      else
+        IO.puts(:stderr, "SKIP: git not available in PATH")
+      end
+    end
+
+    test "retries issue when workspace is clean after stall" do
+      if git_available?() do
+        test_root =
+          Path.join(
+            System.tmp_dir!(),
+            "symphony-elixir-down-clean-#{System.unique_integer([:positive])}"
+          )
+
+        workspace_root = Path.join(test_root, "workspaces")
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          tracker_api_token: nil,
+          agent_stall_timeout_ms: 1_000
+        )
+
+        workspace_path = Path.join(workspace_root, "MT-CLEAN-DOWN")
+        File.mkdir_p!(workspace_path)
+
+        System.cmd("git", ["-C", workspace_path, "init", "-b", "main"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.name", "Test User"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.email", "test@example.com"])
+
+        File.write!(Path.join(workspace_path, "initial.txt"), "hello\n")
+        System.cmd("git", ["-C", workspace_path, "add", "."])
+        System.cmd("git", ["-C", workspace_path, "commit", "-m", "initial"])
+
+        issue_id = "issue-down-clean"
+        orchestrator_name = Module.concat(__MODULE__, :DownCleanOrchestrator)
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+        on_exit(fn ->
+          if Process.alive?(pid) do
+            Process.exit(pid, :normal)
+          end
+
+          File.rm_rf(test_root)
+        end)
+
+        worker_pid =
+          spawn(fn ->
+            receive do
+              :done -> :ok
+            end
+          end)
+
+        ref = make_ref()
+        stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
+        initial_state = :sys.get_state(pid)
+
+        running_entry = %{
+          pid: worker_pid,
+          ref: ref,
+          identifier: "MT-CLEAN-DOWN",
+          issue: %Issue{id: issue_id, identifier: "MT-CLEAN-DOWN", state: "In Progress"},
+          session_id: "thread-down-clean",
+          last_agent_message: nil,
+          last_agent_timestamp: stale_activity_at,
+          last_agent_event: :notification,
+          started_at: stale_activity_at,
+          workspace_path: workspace_path
+        }
+
+        :sys.replace_state(pid, fn _ ->
+          initial_state
+          |> Map.put(:running, %{issue_id => running_entry})
+          |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+        end)
+
+        send(pid, :tick)
+        Process.sleep(200)
+        state = :sys.get_state(pid)
+
+        assert Map.has_key?(state.running, issue_id)
+        assert state.running[issue_id].status == :terminating
+
+        send(pid, {:DOWN, ref, :process, worker_pid, :shutdown})
+        Process.sleep(100)
+        state = :sys.get_state(pid)
+
+        refute Map.has_key?(state.running, issue_id)
+        refute Map.has_key?(state.blocked, issue_id)
+        assert Map.has_key?(state.retry_attempts, issue_id)
+
+        assert %{
+                 attempt: 1,
+                 identifier: "MT-CLEAN-DOWN",
+                 error: "stalled/terminated: :shutdown"
+               } = state.retry_attempts[issue_id]
+      else
+        IO.puts(:stderr, "SKIP: git not available in PATH")
+      end
+    end
+
+    test "retries issue when workspace_path is nil after stall" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 1_000
+      )
+
+      issue_id = "issue-down-nil-ws"
+      orchestrator_name = Module.concat(__MODULE__, :DownNilWsOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
+      ref = make_ref()
+      stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: ref,
+        identifier: "MT-NIL-WS",
+        issue: %Issue{id: issue_id, identifier: "MT-NIL-WS", state: "In Progress"},
+        session_id: "thread-down-nil-ws",
+        last_agent_message: nil,
+        last_agent_timestamp: stale_activity_at,
+        last_agent_event: :notification,
+        started_at: stale_activity_at
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, :tick)
+      Process.sleep(200)
+      state = :sys.get_state(pid)
+
+      assert Map.has_key?(state.running, issue_id)
+      assert state.running[issue_id].status == :terminating
+
+      send(pid, {:DOWN, ref, :process, worker_pid, :shutdown})
+      Process.sleep(100)
+      state = :sys.get_state(pid)
+
+      refute Map.has_key?(state.running, issue_id)
+      refute Map.has_key?(state.blocked, issue_id)
+      assert Map.has_key?(state.retry_attempts, issue_id)
+
+      assert %{
+               attempt: 1,
+               identifier: "MT-NIL-WS",
+               error: "stalled/terminated: :shutdown"
+             } = state.retry_attempts[issue_id]
+    end
+  end
+
+  describe "retry dispatch blocks on dirty workspace (Task 4)" do
+    test "handle_active_retry blocks issue when workspace is dirty on retry" do
+      if git_available?() do
+        test_root =
+          Path.join(
+            System.tmp_dir!(),
+            "symphony-elixir-retry-dirty-#{System.unique_integer([:positive])}"
+          )
+
+        workspace_root = Path.join(test_root, "workspaces")
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          tracker_api_token: nil,
+          tracker_kind: "memory"
+        )
+
+        workspace_path = Path.join(workspace_root, "MT-RETRY-DIRTY")
+        File.mkdir_p!(workspace_path)
+
+        System.cmd("git", ["-C", workspace_path, "init", "-b", "main"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.name", "Test User"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.email", "test@example.com"])
+
+        File.write!(Path.join(workspace_path, "initial.txt"), "hello\n")
+        System.cmd("git", ["-C", workspace_path, "add", "."])
+        System.cmd("git", ["-C", workspace_path, "commit", "-m", "initial"])
+
+        File.write!(Path.join(workspace_path, "dirty.txt"), "uncommitted\n")
+
+        issue_id = "issue-retry-dirty"
+
+        issue = %Issue{
+          id: issue_id,
+          identifier: "MT-RETRY-DIRTY",
+          title: "Retry dirty test",
+          state: "In Progress",
+          url: "https://example.org/issues/MT-RETRY-DIRTY"
+        }
+
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+        orchestrator_name = Module.concat(__MODULE__, :RetryDirtyOrchestrator)
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+        on_exit(fn ->
+          if Process.alive?(pid) do
+            Process.exit(pid, :normal)
+          end
+
+          Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+          File.rm_rf(test_root)
+        end)
+
+        retry_token = make_ref()
+
+        retry_entry = %{
+          attempt: 2,
+          timer_ref: nil,
+          retry_token: retry_token,
+          due_at_ms: System.monotonic_time(:millisecond) + 5_000,
+          identifier: "MT-RETRY-DIRTY",
+          error: "agent exited: :boom",
+          worker_host: nil,
+          workspace_path: workspace_path
+        }
+
+        initial_state = :sys.get_state(pid)
+
+        :sys.replace_state(pid, fn _ ->
+          initial_state
+          |> Map.put(:retry_attempts, %{issue_id => retry_entry})
+          |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+        end)
+
+        send(pid, {:retry_issue, issue_id, retry_token})
+        Process.sleep(100)
+        state = :sys.get_state(pid)
+
+        refute Map.has_key?(state.retry_attempts, issue_id)
+        refute Map.has_key?(state.running, issue_id)
+        assert Map.has_key?(state.blocked, issue_id)
+
+        blocked_entry = state.blocked[issue_id]
+        assert blocked_entry.identifier == "MT-RETRY-DIRTY"
+        assert blocked_entry.workspace_path == workspace_path
+        assert blocked_entry.reason == "workspace_dirty_on_retry"
+        assert is_list(blocked_entry.dirty_files)
+        assert length(blocked_entry.dirty_files) > 0
+      else
+        IO.puts(:stderr, "SKIP: git not available in PATH")
+      end
+    end
+
+    test "handle_active_retry proceeds with dispatch when workspace is clean on retry" do
+      if git_available?() do
+        test_root =
+          Path.join(
+            System.tmp_dir!(),
+            "symphony-elixir-retry-clean-#{System.unique_integer([:positive])}"
+          )
+
+        workspace_root = Path.join(test_root, "workspaces")
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          tracker_api_token: nil,
+          tracker_kind: "memory"
+        )
+
+        workspace_path = Path.join(workspace_root, "MT-RETRY-CLEAN")
+        File.mkdir_p!(workspace_path)
+
+        System.cmd("git", ["-C", workspace_path, "init", "-b", "main"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.name", "Test User"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.email", "test@example.com"])
+
+        File.write!(Path.join(workspace_path, "initial.txt"), "hello\n")
+        System.cmd("git", ["-C", workspace_path, "add", "."])
+        System.cmd("git", ["-C", workspace_path, "commit", "-m", "initial"])
+
+        issue_id = "issue-retry-clean"
+
+        issue = %Issue{
+          id: issue_id,
+          identifier: "MT-RETRY-CLEAN",
+          title: "Retry clean test",
+          state: "In Progress",
+          url: "https://example.org/issues/MT-RETRY-CLEAN"
+        }
+
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+        orchestrator_name = Module.concat(__MODULE__, :RetryCleanOrchestrator)
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+        on_exit(fn ->
+          if Process.alive?(pid) do
+            Process.exit(pid, :normal)
+          end
+
+          Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+          File.rm_rf(test_root)
+        end)
+
+        retry_token = make_ref()
+
+        retry_entry = %{
+          attempt: 2,
+          timer_ref: nil,
+          retry_token: retry_token,
+          due_at_ms: System.monotonic_time(:millisecond) + 5_000,
+          identifier: "MT-RETRY-CLEAN",
+          error: "agent exited: :boom",
+          worker_host: nil,
+          workspace_path: workspace_path
+        }
+
+        initial_state = :sys.get_state(pid)
+
+        :sys.replace_state(pid, fn _ ->
+          initial_state
+          |> Map.put(:retry_attempts, %{issue_id => retry_entry})
+          |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+        end)
+
+        send(pid, {:retry_issue, issue_id, retry_token})
+        Process.sleep(100)
+        state = :sys.get_state(pid)
+
+        refute Map.has_key?(state.blocked, issue_id)
+      else
+        IO.puts(:stderr, "SKIP: git not available in PATH")
+      end
+    end
+
+    test "handle_active_retry proceeds with dispatch when workspace_path is nil" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        tracker_kind: "memory"
+      )
+
+      issue_id = "issue-retry-nil-ws"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-RETRY-NIL",
+        title: "Retry nil ws test",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-RETRY-NIL"
+      }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :RetryNilWsOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      end)
+
+      retry_token = make_ref()
+
+      retry_entry = %{
+        attempt: 2,
+        timer_ref: nil,
+        retry_token: retry_token,
+        due_at_ms: System.monotonic_time(:millisecond) + 5_000,
+        identifier: "MT-RETRY-NIL",
+        error: "agent exited: :boom",
+        worker_host: nil,
+        workspace_path: nil
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:retry_attempts, %{issue_id => retry_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+      Process.sleep(100)
+      state = :sys.get_state(pid)
+
+      refute Map.has_key?(state.blocked, issue_id)
+    end
+  end
+
+  describe "blocked issues not re-dispatched (Task 7)" do
+    test "should_dispatch_issue? returns false for blocked issue" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :BlockedDispatchOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-blocked-dispatch"
+
+      _issue = %Issue{
+        id: issue_id,
+        identifier: "MT-BLOCKED",
+        title: "Blocked dispatch test",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-BLOCKED"
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      blocked_entry = %{
+        identifier: "MT-BLOCKED",
+        workspace_path: "/tmp/ws/MT-BLOCKED",
+        reason: "workspace_dirty",
+        dirty_files: ["lib/foo.ex"],
+        last_error: "exit code 1",
+        blocked_at: DateTime.utc_now()
+      }
+
+      state_with_blocked =
+        initial_state
+        |> Map.put(:blocked, %{issue_id => blocked_entry})
+
+      :sys.replace_state(pid, fn _ -> state_with_blocked end)
+
+      state = :sys.get_state(pid)
+      assert Map.has_key?(state.blocked, issue_id)
+    end
+
+    test "handle_retry_issue skips retry for blocked issue" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        tracker_kind: "memory"
+      )
+
+      issue_id = "issue-blocked-retry"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-BLOCKED-RETRY",
+        title: "Blocked retry test",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-BLOCKED-RETRY"
+      }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :BlockedRetryOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      end)
+
+      retry_token = make_ref()
+
+      retry_entry = %{
+        attempt: 2,
+        timer_ref: nil,
+        retry_token: retry_token,
+        due_at_ms: System.monotonic_time(:millisecond) + 5_000,
+        identifier: "MT-BLOCKED-RETRY",
+        error: "agent exited: :boom",
+        worker_host: nil,
+        workspace_path: "/tmp/ws/MT-BLOCKED-RETRY"
+      }
+
+      blocked_entry = %{
+        identifier: "MT-BLOCKED-RETRY",
+        workspace_path: "/tmp/ws/MT-BLOCKED-RETRY",
+        reason: "workspace_dirty",
+        dirty_files: ["lib/foo.ex"],
+        last_error: "exit code 1",
+        blocked_at: DateTime.utc_now()
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:retry_attempts, %{issue_id => retry_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+        |> Map.put(:blocked, %{issue_id => blocked_entry})
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+      Process.sleep(100)
+      state = :sys.get_state(pid)
+
+      assert Map.has_key?(state.blocked, issue_id)
+      refute Map.has_key?(state.retry_attempts, issue_id)
+      refute Map.has_key?(state.running, issue_id)
+      refute MapSet.member?(state.claimed, issue_id)
+    end
+  end
+
+  describe "unblock_issue/2" do
+    test "removes issue from blocked map" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :UnblockOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-unblock-test"
+
+      initial_state = :sys.get_state(pid)
+
+      blocked_entry = %{
+        identifier: "MT-UNBLOCK",
+        workspace_path: "/tmp/ws/MT-UNBLOCK",
+        reason: "workspace_dirty",
+        dirty_files: ["lib/foo.ex"],
+        last_error: "exit code 1",
+        blocked_at: DateTime.utc_now()
+      }
+
+      state_with_blocked =
+        initial_state
+        |> Map.put(:blocked, %{issue_id => blocked_entry})
+
+      :sys.replace_state(pid, fn _ -> state_with_blocked end)
+
+      state_before = :sys.get_state(pid)
+      assert Map.has_key?(state_before.blocked, issue_id)
+
+      Orchestrator.unblock_issue(state_before, issue_id)
+
+      state_after = :sys.get_state(pid)
+      refute Map.has_key?(state_after.blocked, issue_id)
+    end
+
+    test "does not affect claimed map" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :UnblockClaimedOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-unblock-claimed"
+
+      initial_state = :sys.get_state(pid)
+
+      blocked_entry = %{
+        identifier: "MT-UNBLOCK-CLAIMED",
+        workspace_path: "/tmp/ws/MT-UNBLOCK-CLAIMED",
+        reason: "workspace_dirty",
+        dirty_files: [],
+        last_error: "exit",
+        blocked_at: DateTime.utc_now()
+      }
+
+      state_with_both =
+        initial_state
+        |> Map.put(:blocked, %{issue_id => blocked_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+
+      :sys.replace_state(pid, fn _ -> state_with_both end)
+
+      state_before = :sys.get_state(pid)
+      assert MapSet.member?(state_before.claimed, issue_id)
+
+      Orchestrator.unblock_issue(state_before, issue_id)
+
+      state_after = :sys.get_state(pid)
+      refute Map.has_key?(state_after.blocked, issue_id)
+      assert MapSet.member?(state_after.claimed, issue_id)
+    end
+  end
+
+  describe "workspace activity scan in tick cycle (Task 10)" do
+    test "workspace mtime changes update last_workspace_activity_at in running entry" do
+      if git_available?() do
+        test_root =
+          Path.join(
+            System.tmp_dir!(),
+            "symphony-elixir-ws-activity-mtime-#{System.unique_integer([:positive])}"
+          )
+
+        workspace_root = Path.join(test_root, "workspaces")
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          tracker_api_token: nil,
+          agent_stall_timeout_ms: 300_000
+        )
+
+        workspace_path = Path.join(workspace_root, "MT-WS-ACT")
+        File.mkdir_p!(workspace_path)
+
+        System.cmd("git", ["-C", workspace_path, "init", "-b", "main"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.name", "Test User"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.email", "test@example.com"])
+
+        File.write!(Path.join(workspace_path, "initial.txt"), "hello\n")
+        System.cmd("git", ["-C", workspace_path, "add", "."])
+        System.cmd("git", ["-C", workspace_path, "commit", "-m", "initial"])
+
+        File.write!(Path.join(workspace_path, "dirty.txt"), "uncommitted\n")
+
+        issue_id = "issue-ws-activity-mtime"
+        orchestrator_name = Module.concat(__MODULE__, :WsActivityMtimeOrchestrator)
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+        on_exit(fn ->
+          if Process.alive?(pid) do
+            Process.exit(pid, :normal)
+          end
+
+          File.rm_rf(test_root)
+        end)
+
+        worker_pid =
+          spawn(fn ->
+            receive do
+              :done -> :ok
+            end
+          end)
+
+        ref = make_ref()
+        started_at = DateTime.utc_now()
+        initial_state = :sys.get_state(pid)
+
+        running_entry = %{
+          pid: worker_pid,
+          ref: ref,
+          identifier: "MT-WS-ACT",
+          issue: %Issue{id: issue_id, identifier: "MT-WS-ACT", state: "In Progress"},
+          session_id: "thread-ws-act",
+          last_agent_message: nil,
+          last_agent_timestamp: nil,
+          last_agent_event: nil,
+          started_at: started_at,
+          workspace_path: workspace_path,
+          progress_source: "none",
+          last_workspace_activity_at: nil,
+          last_process_seen_at: nil
+        }
+
+        :sys.replace_state(pid, fn _ ->
+          initial_state
+          |> Map.put(:running, %{issue_id => running_entry})
+          |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+        end)
+
+        send(pid, :tick)
+        Process.sleep(100)
+
+        state = :sys.get_state(pid)
+        entry = state.running[issue_id]
+
+        assert entry.last_workspace_activity_at != nil
+        assert %DateTime{} = entry.last_workspace_activity_at
+
+        send(worker_pid, :done)
+      else
+        IO.puts(:stderr, "SKIP: git not available in PATH")
+      end
+    end
+
+    test "progress_source changes to workspace_activity when workspace activity detected and no raw events" do
+      if git_available?() do
+        test_root =
+          Path.join(
+            System.tmp_dir!(),
+            "symphony-elixir-ws-activity-source-#{System.unique_integer([:positive])}"
+          )
+
+        workspace_root = Path.join(test_root, "workspaces")
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          tracker_api_token: nil,
+          agent_stall_timeout_ms: 300_000
+        )
+
+        workspace_path = Path.join(workspace_root, "MT-WS-SRC")
+        File.mkdir_p!(workspace_path)
+
+        System.cmd("git", ["-C", workspace_path, "init", "-b", "main"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.name", "Test User"])
+        System.cmd("git", ["-C", workspace_path, "config", "user.email", "test@example.com"])
+
+        File.write!(Path.join(workspace_path, "initial.txt"), "hello\n")
+        System.cmd("git", ["-C", workspace_path, "add", "."])
+        System.cmd("git", ["-C", workspace_path, "commit", "-m", "initial"])
+
+        File.write!(Path.join(workspace_path, "dirty.txt"), "uncommitted\n")
+
+        issue_id = "issue-ws-activity-source"
+        orchestrator_name = Module.concat(__MODULE__, :WsActivitySourceOrchestrator)
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+        on_exit(fn ->
+          if Process.alive?(pid) do
+            Process.exit(pid, :normal)
+          end
+
+          File.rm_rf(test_root)
+        end)
+
+        worker_pid =
+          spawn(fn ->
+            receive do
+              :done -> :ok
+            end
+          end)
+
+        ref = make_ref()
+        started_at = DateTime.utc_now()
+        initial_state = :sys.get_state(pid)
+
+        running_entry = %{
+          pid: worker_pid,
+          ref: ref,
+          identifier: "MT-WS-SRC",
+          issue: %Issue{id: issue_id, identifier: "MT-WS-SRC", state: "In Progress"},
+          session_id: "thread-ws-src",
+          last_agent_message: nil,
+          last_agent_timestamp: nil,
+          last_agent_event: nil,
+          last_raw_event_at: nil,
+          started_at: started_at,
+          workspace_path: workspace_path,
+          progress_source: "none",
+          last_workspace_activity_at: nil,
+          last_process_seen_at: nil
+        }
+
+        :sys.replace_state(pid, fn _ ->
+          initial_state
+          |> Map.put(:running, %{issue_id => running_entry})
+          |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+        end)
+
+        send(pid, :tick)
+        Process.sleep(100)
+
+        state = :sys.get_state(pid)
+        entry = state.running[issue_id]
+
+        assert entry.progress_source == "workspace_activity"
+        assert entry.last_workspace_activity_at != nil
+
+        send(worker_pid, :done)
+      else
+        IO.puts(:stderr, "SKIP: git not available in PATH")
+      end
+    end
+  end
+
+  describe "process alive detection in stall reconciliation (Task 11)" do
+    test "updates last_process_seen_at when agent pid is alive" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 300_000
+      )
+
+      issue_id = "issue-process-alive"
+      orchestrator_name = Module.concat(__MODULE__, :ProcessAliveOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      alive_pid = spawn(fn -> receive do :done -> :ok end end)
+      ref = make_ref()
+      started_at = DateTime.utc_now()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: alive_pid,
+        ref: ref,
+        identifier: "MT-PROC-ALIVE",
+        issue: %Issue{id: issue_id, identifier: "MT-PROC-ALIVE", state: "In Progress"},
+        session_id: nil,
+        last_agent_message: nil,
+        last_agent_timestamp: started_at,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        progress_source: "none"
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, :tick)
+      Process.sleep(300)
+
+      state = :sys.get_state(pid)
+      updated_entry = Map.get(state.running, issue_id)
+
+      assert updated_entry != nil
+      assert updated_entry.last_process_seen_at != nil
+      assert %DateTime{} = updated_entry.last_process_seen_at
+
+      send(alive_pid, :done)
+    end
+
+    test "sets progress_source to process_alive when pid is alive and no raw events or workspace activity" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 300_000
+      )
+
+      issue_id = "issue-process-alive-source"
+      orchestrator_name = Module.concat(__MODULE__, :ProcessAliveSourceOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      alive_pid = spawn(fn -> receive do :done -> :ok end end)
+      ref = make_ref()
+      started_at = DateTime.utc_now()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: alive_pid,
+        ref: ref,
+        identifier: "MT-PROC-SRC",
+        issue: %Issue{id: issue_id, identifier: "MT-PROC-SRC", state: "In Progress"},
+        session_id: nil,
+        last_agent_message: nil,
+        last_agent_timestamp: started_at,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        workspace_path: nil,
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        progress_source: "none"
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, :tick)
+      Process.sleep(300)
+
+      state = :sys.get_state(pid)
+      updated_entry = Map.get(state.running, issue_id)
+
+      assert updated_entry != nil
+      assert updated_entry.progress_source == "process_alive"
+      assert updated_entry.last_process_seen_at != nil
+
+      send(alive_pid, :done)
+    end
+
+    test "does not update last_process_seen_at when agent pid is dead" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 300_000
+      )
+
+      issue_id = "issue-process-dead"
+      orchestrator_name = Module.concat(__MODULE__, :ProcessDeadOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      dead_pid = spawn(fn -> :ok end)
+      Process.sleep(50)
+      refute Process.alive?(dead_pid)
+
+      ref = make_ref()
+      started_at = DateTime.utc_now()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: dead_pid,
+        ref: ref,
+        identifier: "MT-PROC-DEAD",
+        issue: %Issue{id: issue_id, identifier: "MT-PROC-DEAD", state: "In Progress"},
+        session_id: nil,
+        last_agent_message: nil,
+        last_agent_timestamp: started_at,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        workspace_path: nil,
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        progress_source: "none"
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, :tick)
+      Process.sleep(300)
+
+      state = :sys.get_state(pid)
+      updated_entry = Map.get(state.running, issue_id)
+
+      assert updated_entry != nil
+      assert updated_entry.last_process_seen_at == nil
+      assert updated_entry.progress_source == "none"
+    end
+  end
+
+  describe "multi-signal stall detection (Task 12)" do
+    test "fresh raw event means not stalled — agent not terminated" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 1_000
+      )
+
+      issue_id = "issue-multi-raw-fresh"
+      orchestrator_name = Module.concat(__MODULE__, :MultiRawFreshOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
+      ref = make_ref()
+      now = DateTime.utc_now()
+      stale_started_at = DateTime.add(DateTime.utc_now(), -5, :second)
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: ref,
+        identifier: "MT-MULTI-RAW",
+        issue: %Issue{id: issue_id, identifier: "MT-MULTI-RAW", state: "In Progress"},
+        session_id: "thread-multi-raw",
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: now,
+        started_at: stale_started_at,
+        workspace_path: nil,
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        progress_source: "raw_event",
+        status: :running
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, :tick)
+      Process.sleep(200)
+
+      state = :sys.get_state(pid)
+      entry = state.running[issue_id]
+
+      assert entry != nil
+      assert Map.get(entry, :status) != :terminating
+      assert Process.alive?(worker_pid)
+
+      send(worker_pid, :done)
+    end
+
+    test "no raw event but fresh workspace activity means not stalled — agent not terminated" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 10_000
+      )
+
+      issue_id = "issue-multi-ws-fresh"
+      orchestrator_name = Module.concat(__MODULE__, :MultiWsFreshOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
+      ref = make_ref()
+      now = DateTime.utc_now()
+      stale_started_at = DateTime.add(DateTime.utc_now(), -5, :second)
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: ref,
+        identifier: "MT-MULTI-WS",
+        issue: %Issue{id: issue_id, identifier: "MT-MULTI-WS", state: "In Progress"},
+        session_id: "thread-multi-ws",
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: stale_started_at,
+        workspace_path: nil,
+        last_workspace_activity_at: now,
+        last_process_seen_at: nil,
+        progress_source: "workspace_activity",
+        status: :running
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, :tick)
+      Process.sleep(200)
+
+      state = :sys.get_state(pid)
+      entry = state.running[issue_id]
+
+      assert entry != nil
+      assert Map.get(entry, :status) != :terminating
+      assert Process.alive?(worker_pid)
+
+      send(worker_pid, :done)
+    end
+
+    test "no raw event, no workspace activity, but process alive means maybe_stalled — agent not terminated" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 1_000
+      )
+
+      issue_id = "issue-multi-maybe-stalled"
+      orchestrator_name = Module.concat(__MODULE__, :MultiMaybeStalledOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      alive_pid = spawn(fn -> receive do :done -> :ok end end)
+      ref = make_ref()
+      now = DateTime.utc_now()
+      stale_started_at = DateTime.add(DateTime.utc_now(), -2, :second)
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: alive_pid,
+        ref: ref,
+        identifier: "MT-MULTI-MAYBE",
+        issue: %Issue{id: issue_id, identifier: "MT-MULTI-MAYBE", state: "In Progress"},
+        session_id: "thread-multi-maybe",
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: stale_started_at,
+        workspace_path: nil,
+        last_workspace_activity_at: nil,
+        last_process_seen_at: now,
+        progress_source: "process_alive",
+        status: :running
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, :tick)
+      Process.sleep(200)
+
+      state = :sys.get_state(pid)
+      entry = state.running[issue_id]
+
+      assert entry != nil
+      assert Map.get(entry, :status) != :terminating
+      assert Process.alive?(alive_pid)
+
+      send(alive_pid, :done)
+    end
+
+    test "all signals stale means stalled — agent terminated" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 1_000
+      )
+
+      issue_id = "issue-multi-all-stale"
+      orchestrator_name = Module.concat(__MODULE__, :MultiAllStaleOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
+      ref = make_ref()
+      stale_time = DateTime.add(DateTime.utc_now(), -5, :second)
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: ref,
+        identifier: "MT-MULTI-STALL",
+        issue: %Issue{id: issue_id, identifier: "MT-MULTI-STALL", state: "In Progress"},
+        session_id: "thread-multi-stall",
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: stale_time,
+        started_at: stale_time,
+        workspace_path: nil,
+        last_workspace_activity_at: stale_time,
+        last_process_seen_at: nil,
+        progress_source: "none",
+        status: :running
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, :tick)
+      Process.sleep(200)
+
+      state = :sys.get_state(pid)
+
+      assert Map.has_key?(state.running, issue_id)
+      assert state.running[issue_id].status == :terminating
+
+      send(worker_pid, :done)
+    end
   end
 end

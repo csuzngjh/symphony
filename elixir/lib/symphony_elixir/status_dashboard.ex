@@ -23,7 +23,7 @@ defmodule SymphonyElixir.StatusDashboard do
   @running_session_width 14
   @running_event_default_width 44
   @running_event_min_width 12
-  @running_row_chrome_width 10
+  @running_row_chrome_width 11
   @default_terminal_columns 115
 
   @ansi_reset IO.ANSI.reset()
@@ -315,6 +315,7 @@ defp snapshot_with_samples(token_samples, now_ms) do
            %{
              running: running,
              retrying: retrying,
+             blocked: Map.get(snapshot, :blocked, []),
              agent_totals: agent_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -334,6 +335,7 @@ defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ ni
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, agent_totals: agent_totals} = snapshot} ->
         rate_limits = Map.get(snapshot, :rate_limits)
+        blocked = Map.get(snapshot, :blocked, [])
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
         agent_input_tokens = Map.get(agent_totals, :input_tokens, 0)
@@ -346,6 +348,8 @@ defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ ni
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
+        backoff_to_blocked_spacer = if(retrying == [], do: [], else: ["│"])
+        blocked_rows = format_blocked_rows(blocked)
 
         ([
            colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -374,6 +378,9 @@ colorize("│ Runtime: ", @ansi_bold) <>
            running_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
+           backoff_to_blocked_spacer ++
+           [colorize("├─ Blocked", @ansi_bold), "│"] ++
+           blocked_rows ++
            [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
@@ -560,6 +567,7 @@ defp snapshot_payload do
            %{
              running: running,
              retrying: retrying,
+             blocked: Map.get(snapshot, :blocked, []),
              agent_totals: agent_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -586,6 +594,12 @@ defp snapshot_payload do
     end
   end
 
+  defp format_progress_indicator("raw_event"), do: colorize("●", @ansi_green)
+  defp format_progress_indicator("workspace_activity"), do: colorize("◉", @ansi_yellow)
+  defp format_progress_indicator("process_alive"), do: colorize("◎", @ansi_orange)
+  defp format_progress_indicator("none"), do: colorize("○", @ansi_red)
+  defp format_progress_indicator(_), do: colorize("●", @ansi_green)
+
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, running_event_width) do
     issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
@@ -604,8 +618,6 @@ defp snapshot_payload do
 
     tokens = format_count(total_tokens) |> format_cell(@running_tokens_width, :right)
 
-    tokens = format_count(total_tokens) |> format_cell(@running_tokens_width, :right)
-
 status_color =
       case event do
         :none -> @ansi_red
@@ -615,9 +627,13 @@ status_color =
         _ -> @ansi_blue
       end
 
+    progress_source = Map.get(running_entry, :progress_source)
+    progress_indicator = format_progress_indicator(progress_source)
+
     [
       "│ ",
       status_dot(status_color),
+      progress_indicator,
       " ",
       colorize(issue, @ansi_cyan),
       " ",
@@ -658,6 +674,31 @@ status_color =
       |> Enum.map_join(", ", &format_retry_summary/1)
       |> String.split(", ")
     end
+  end
+
+  defp format_blocked_rows(blocked) do
+    if blocked == [] do
+      ["│  " <> colorize("No blocked issues", @ansi_gray)]
+    else
+      blocked
+      |> Enum.sort_by(& &1.identifier)
+      |> Enum.map(&format_blocked_summary/1)
+    end
+  end
+
+  defp format_blocked_summary(blocked_entry) do
+    identifier = blocked_entry.identifier || "unknown"
+    reason = blocked_entry.reason || "unknown"
+    workspace_path = blocked_entry.workspace_path || "n/a"
+
+    "│  " <>
+      colorize("•", @ansi_red) <>
+      " " <>
+      colorize(identifier, @ansi_red) <>
+      colorize(" — ", @ansi_gray) <>
+      colorize(reason, @ansi_orange) <>
+      colorize(" — ", @ansi_gray) <>
+      colorize(workspace_path, @ansi_dim)
   end
 
   defp format_retry_summary(retry_entry) do
@@ -753,7 +794,7 @@ status_color =
       ]
       |> Enum.join(" ")
 
-    "│   " <> colorize(header, @ansi_gray)
+    "│    " <> colorize(header, @ansi_gray)
   end
 
   defp running_table_separator_row(running_event_width) do
@@ -764,9 +805,9 @@ status_color =
         @running_age_width +
         @running_tokens_width +
         @running_session_width +
-        running_event_width + 6
+        running_event_width + 7
 
-    "│   " <> colorize(String.duplicate("─", separator_width), @ansi_gray)
+    "│    " <> colorize(String.duplicate("─", separator_width), @ansi_gray)
   end
 
   defp running_event_width(terminal_columns) do

@@ -15,10 +15,12 @@ defmodule SymphonyElixirWeb.Presenter do
           generated_at: generated_at,
           counts: %{
             running: length(snapshot.running),
-            retrying: length(snapshot.retrying)
+            retrying: length(snapshot.retrying),
+            blocked: length(snapshot.blocked)
           },
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+          blocked: Enum.map(snapshot.blocked, &blocked_entry_payload/1),
           agent_totals: snapshot.agent_totals,
           rate_limits: snapshot.rate_limits
         }
@@ -37,11 +39,12 @@ defmodule SymphonyElixirWeb.Presenter do
       %{} = snapshot ->
         running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
         retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
+        blocked = Enum.find(snapshot.blocked, &(&1.identifier == issue_identifier))
 
-        if is_nil(running) and is_nil(retry) do
+        if is_nil(running) and is_nil(retry) and is_nil(blocked) do
           {:error, :issue_not_found}
         else
-          {:ok, issue_payload_body(issue_identifier, running, retry)}
+          {:ok, issue_payload_body(issue_identifier, running, retry, blocked)}
         end
 
       _ ->
@@ -60,13 +63,13 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp issue_payload_body(issue_identifier, running, retry) do
+  defp issue_payload_body(issue_identifier, running, retry, blocked) do
     %{
       issue_identifier: issue_identifier,
-      issue_id: issue_id_from_entries(running, retry),
-      status: issue_status(running, retry),
+      issue_id: issue_id_from_entries(running, retry, blocked),
+      status: issue_status(running, retry, blocked),
       workspace: %{
-        path: workspace_path(issue_identifier, running, retry),
+        path: workspace_path(issue_identifier, running, retry, blocked),
         host: workspace_host(running, retry)
       },
       attempts: %{
@@ -75,6 +78,7 @@ defmodule SymphonyElixirWeb.Presenter do
       },
       running: running && running_issue_payload(running),
       retry: retry && retry_issue_payload(retry),
+      blocked: blocked && blocked_issue_payload(blocked),
       logs: %{
         agent_session_logs: []
       },
@@ -84,16 +88,17 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp issue_id_from_entries(running, retry),
-    do: (running && running.issue_id) || (retry && retry.issue_id)
+  defp issue_id_from_entries(running, retry, blocked),
+    do: (running && running.issue_id) || (retry && retry.issue_id) || (blocked && blocked.issue_id)
 
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
 
-  defp issue_status(_running, nil), do: "running"
-  defp issue_status(nil, _retry), do: "retrying"
-  defp issue_status(_running, _retry), do: "running"
+  defp issue_status(_running, nil, nil), do: "running"
+  defp issue_status(nil, _retry, nil), do: "retrying"
+  defp issue_status(nil, nil, %{}), do: "blocked"
+  defp issue_status(_running, _retry, _blocked), do: "running"
 
   defp running_entry_payload(entry) do
     %{
@@ -114,6 +119,10 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(entry.last_agent_message),
       started_at: iso8601(entry.started_at),
       last_event_at: iso8601(entry.last_agent_timestamp),
+      progress_source: Map.get(entry, :progress_source, "none"),
+      last_progress_at: iso8601(latest_progress_at(entry)),
+      last_workspace_activity_at: iso8601(Map.get(entry, :last_workspace_activity_at)),
+      process_alive: process_alive?(entry),
       tokens: %{
         input_tokens: entry.agent_input_tokens,
         output_tokens: entry.agent_output_tokens,
@@ -134,7 +143,7 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-defp running_issue_payload(running) do
+  defp running_issue_payload(running) do
     %{
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
@@ -145,6 +154,10 @@ defp running_issue_payload(running) do
       last_event: running.last_agent_event,
       last_message: summarize_message(running.last_agent_message),
       last_event_at: iso8601(running.last_agent_timestamp),
+      progress_source: Map.get(running, :progress_source, "none"),
+      last_progress_at: iso8601(latest_progress_at(running)),
+      last_workspace_activity_at: iso8601(Map.get(running, :last_workspace_activity_at)),
+      process_alive: process_alive?(running),
       tokens: %{
         input_tokens: running.agent_input_tokens,
         output_tokens: running.agent_output_tokens,
@@ -163,9 +176,32 @@ defp running_issue_payload(running) do
     }
   end
 
-  defp workspace_path(issue_identifier, running, retry) do
+  defp blocked_entry_payload(entry) do
+    %{
+      issue_id: entry.issue_id,
+      issue_identifier: entry.identifier,
+      workspace_path: entry.workspace_path,
+      reason: entry.reason,
+      dirty_files: entry.dirty_files,
+      last_error: entry.last_error,
+      blocked_at: iso8601(entry.blocked_at)
+    }
+  end
+
+  defp blocked_issue_payload(blocked) do
+    %{
+      reason: blocked.reason,
+      workspace_path: blocked.workspace_path,
+      dirty_files: blocked.dirty_files,
+      last_error: blocked.last_error,
+      blocked_at: iso8601(blocked.blocked_at)
+    }
+  end
+
+  defp workspace_path(issue_identifier, running, retry, blocked) do
     (running && Map.get(running, :workspace_path)) ||
       (retry && Map.get(retry, :workspace_path)) ||
+      (blocked && Map.get(blocked, :workspace_path)) ||
       Path.join(Config.settings!().workspace.root, issue_identifier)
   end
 
@@ -203,4 +239,17 @@ defp running_issue_payload(running) do
   end
 
   defp iso8601(_datetime), do: nil
+
+  defp latest_progress_at(running) do
+    [running[:last_raw_event_at], running[:last_workspace_activity_at], running[:last_process_seen_at]]
+    |> Enum.filter(&is_struct(&1, DateTime))
+    |> Enum.max(DateTime, fn -> nil end)
+  end
+
+  defp process_alive?(running) do
+    case Map.get(running, :pid) do
+      pid when is_pid(pid) -> Process.alive?(pid)
+      _ -> false
+    end
+  end
 end
