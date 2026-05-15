@@ -527,17 +527,27 @@ defmodule SymphonyElixir.Orchestrator do
     workspace_path = Map.get(running_entry, :workspace_path)
 
     if is_binary(workspace_path) and workspace_path != "" do
-      case WorkspaceActivity.scan_workspace_activity(workspace_path, Map.get(running_entry, :last_workspace_activity_at)) do
-        {:active, mtime} ->
-          updated =
-            running_entry
-            |> Map.put(:last_workspace_activity_at, mtime)
-            |> Map.put(:progress_source, update_progress_source(Map.put(running_entry, :last_workspace_activity_at, mtime)))
+      now = DateTime.utc_now()
+      scan_interval_ms = Config.settings!().agent.workspace_activity_scan_interval_ms
+      last_scan_at = Map.get(running_entry, :last_workspace_activity_scan_at)
 
-          %{state | running: Map.put(state.running, issue_id, updated)}
+      if last_scan_at == nil or DateTime.diff(now, last_scan_at, :millisecond) >= scan_interval_ms do
+        case WorkspaceActivity.scan_workspace_activity(workspace_path, Map.get(running_entry, :last_workspace_activity_at)) do
+          {:active, mtime} ->
+            updated =
+              running_entry
+              |> Map.put(:last_workspace_activity_at, mtime)
+              |> Map.put(:last_workspace_activity_scan_at, now)
+              |> Map.put(:progress_source, update_progress_source(Map.put(running_entry, :last_workspace_activity_at, mtime)))
 
-        {:stale, nil} ->
-          state
+            %{state | running: Map.put(state.running, issue_id, updated)}
+
+          {:stale, nil} ->
+            updated = Map.put(running_entry, :last_workspace_activity_scan_at, now)
+            %{state | running: Map.put(state.running, issue_id, updated)}
+        end
+      else
+        state
       end
     else
       state
@@ -879,6 +889,7 @@ defmodule SymphonyElixir.Orchestrator do
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now(),
             last_workspace_activity_at: nil,
+            last_workspace_activity_scan_at: nil,
             last_process_seen_at: nil,
             progress_source: "none"
           })
@@ -1376,6 +1387,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_agent_event: metadata.last_agent_event,
           progress_source: Map.get(metadata, :progress_source, "none"),
           last_workspace_activity_at: Map.get(metadata, :last_workspace_activity_at),
+          last_workspace_activity_scan_at: Map.get(metadata, :last_workspace_activity_scan_at),
           last_process_seen_at: Map.get(metadata, :last_process_seen_at),
           pid: Map.get(metadata, :pid),
           runtime_seconds: running_seconds(metadata.started_at, now)

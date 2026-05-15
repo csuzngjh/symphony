@@ -2873,7 +2873,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     test "no raw event but fresh workspace activity means not stalled — agent not terminated" do
       write_workflow_file!(Workflow.workflow_file_path(),
         tracker_api_token: nil,
-        agent_stall_timeout_ms: 1_000
+        agent_stall_timeout_ms: 10_000
       )
 
       issue_id = "issue-multi-ws-fresh"

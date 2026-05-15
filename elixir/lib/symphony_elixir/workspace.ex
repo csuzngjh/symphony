@@ -119,7 +119,7 @@ defmodule SymphonyElixir.Workspace do
     git_dir = Path.join(workspace, ".git")
 
     if File.dir?(git_dir) do
-      case System.cmd("git", ["-C", workspace, "status", "--porcelain"],
+      case git_cmd_with_timeout(["-C", workspace, "status", "--porcelain"],
              stderr_to_stdout: true,
              cd: workspace
            ) do
@@ -132,6 +132,9 @@ defmodule SymphonyElixir.Workspace do
 
         {output, _status} ->
           {:error, {:workspace_git_check_failed, workspace, output}}
+
+        nil ->
+          {:error, {:workspace_git_check_timeout, workspace, "git status timed out"}}
       end
     else
       {:error, {:workspace_not_git, workspace, "not a git repository"}}
