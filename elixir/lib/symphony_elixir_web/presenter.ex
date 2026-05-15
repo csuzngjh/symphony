@@ -145,9 +145,11 @@ defp running_issue_payload(running) do
       last_event: running.last_agent_event,
       last_message: summarize_message(running.last_agent_message),
       last_event_at: iso8601(running.last_agent_timestamp),
-      input_tokens: running.agent_input_tokens,
-      output_tokens: running.agent_output_tokens,
-      total_tokens: running.agent_total_tokens
+      tokens: %{
+        input_tokens: running.agent_input_tokens,
+        output_tokens: running.agent_output_tokens,
+        total_tokens: running.agent_total_tokens
+      }
     }
   end
 

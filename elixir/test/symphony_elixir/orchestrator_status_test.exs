@@ -101,7 +101,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
   end
 
-  test "orchestrator snapshot tracks agent thread totals and app-server pid" do
+  test "orchestrator snapshot tracks agent thread totals and session pid" do
     issue_id = "issue-usage-snapshot"
 
     issue = %Issue{
@@ -177,13 +177,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
          },
          timestamp: now,
-         agent_app_server_pid: "4242"
+         agent_session_pid: "4242"
        }}
     )
 
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
-    assert snapshot_entry.agent_app_server_pid == "4242"
+    assert snapshot_entry.agent_session_pid == "4242"
     assert snapshot_entry.agent_input_tokens == 12
     assert snapshot_entry.agent_output_tokens == 4
     assert snapshot_entry.agent_total_tokens == 16
@@ -1100,12 +1100,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              identifier: "MT-777",
              state: "running",
              session_id: "thread-1234567890",
-agent_app_server_pid: "4242",
-              agent_total_tokens: 3_200,
-              runtime_seconds: 75,
-              turn_count: 7,
-              last_agent_event: "turn_completed",
-              last_agent_message: %{
+             agent_session_pid: "4242",
+             started_at: DateTime.utc_now(),
+             agent_total_tokens: 3_200,
+             runtime_seconds: 75,
+             turn_count: 7,
+             last_agent_event: "turn_completed",
+             last_agent_message: %{
                event: :notification,
                message: %{
                  "method" => "turn/completed",
@@ -1309,7 +1310,8 @@ agent_app_server_pid: "4242",
         identifier: "MT-233",
         state: "running",
         session_id: "thread-1234567890",
-        agent_app_server_pid: "4242",
+        agent_session_pid: "4242",
+        started_at: DateTime.utc_now(),
         agent_total_tokens: 12,
         runtime_seconds: 15,
         last_agent_event: :notification,
@@ -1332,7 +1334,8 @@ agent_app_server_pid: "4242",
           identifier: "MT-598",
           state: "running",
           session_id: "thread-1234567890",
-          agent_app_server_pid: "4242",
+          agent_session_pid: "4242",
+          started_at: DateTime.utc_now(),
           agent_total_tokens: 123,
           runtime_seconds: 15,
           last_agent_event: :notification,

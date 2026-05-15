@@ -65,6 +65,10 @@ defmodule SymphonyElixir.CLI do
 
       case deps.ensure_all_started.() do
         {:ok, started_apps} ->
+          if started_apps == [] do
+            :ok = restart_application()
+          end
+
           IO.puts("Applications started: #{inspect(started_apps)}")
           print_dashboard_url()
           :ok
@@ -74,6 +78,33 @@ defmodule SymphonyElixir.CLI do
       end
     else
       {:error, "Workflow file not found: #{expanded_path}"}
+    end
+  end
+
+  defp restart_application do
+    :ok = Application.stop(:symphony_elixir)
+    wait_for_supervisor_stop(50)
+
+    case Application.ensure_all_started(:symphony_elixir) do
+      {:ok, _} ->
+        :ok
+
+      {:error, {:already_started, _}} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Failed to restart Symphony application: #{inspect(reason)}"
+    end
+  end
+
+  defp wait_for_supervisor_stop(0), do: :ok
+
+  defp wait_for_supervisor_stop(n) do
+    if Process.whereis(SymphonyElixir.Supervisor) do
+      Process.sleep(100)
+      wait_for_supervisor_stop(n - 1)
+    else
+      :ok
     end
   end
 
@@ -208,9 +239,9 @@ defmodule SymphonyElixir.CLI do
 
   @spec wait_for_shutdown() :: no_return()
   defp wait_for_shutdown do
-    case Process.whereis(SymphonyElixir.Supervisor) do
+    case wait_for_supervisor(50) do
       nil ->
-        IO.puts(:stderr, "Symphony supervisor is not running")
+        IO.puts(:stderr, "Symphony supervisor failed to start within timeout")
         System.halt(1)
 
       pid ->
@@ -226,6 +257,19 @@ defmodule SymphonyElixir.CLI do
                 System.halt(1)
             end
         end
+    end
+  end
+
+  defp wait_for_supervisor(0), do: Process.whereis(SymphonyElixir.Supervisor)
+
+  defp wait_for_supervisor(n) do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      nil ->
+        Process.sleep(100)
+        wait_for_supervisor(n - 1)
+
+      pid ->
+        pid
     end
   end
 end

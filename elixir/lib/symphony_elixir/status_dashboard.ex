@@ -592,11 +592,15 @@ defp snapshot_payload do
     state = running_entry.state || "unknown"
     state_display = format_cell(to_string(state), @running_stage_width)
     session = running_entry.session_id |> compact_session_id() |> format_cell(@running_session_width)
-pid = format_cell(running_entry.agent_app_server_pid || "n/a", @running_pid_width)
+    pid = case Map.get(running_entry, :agent_session_pid) do
+      nil -> format_cell("n/a", @running_pid_width)
+      p when is_pid(p) -> format_cell(inspect(p), @running_pid_width)
+      other -> format_cell(to_string(other), @running_pid_width)
+    end
     total_tokens = running_entry.agent_total_tokens || 0
     event = running_entry.last_agent_event || "none"
     event_label = format_cell(summarize_message(running_entry.last_agent_message), running_event_width)
-    age = running_seconds(running_entry.started_at, DateTime.utc_now())
+    age = format_cell(format_runtime_and_turns(running_seconds(Map.get(running_entry, :started_at), DateTime.utc_now()), Map.get(running_entry, :turn_count, 0)), @running_age_width)
 
     tokens = format_count(total_tokens) |> format_cell(@running_tokens_width, :right)
 

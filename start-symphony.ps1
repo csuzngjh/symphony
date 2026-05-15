@@ -111,6 +111,11 @@ if (-not (Test-Path $symphonyExe)) {
   exit 1
 }
 
+$escriptCmd = Get-Command escript -ErrorAction SilentlyContinue
+if (-not $escriptCmd) {
+  $escriptCmd = Get-Command mise -ErrorAction SilentlyContinue
+}
+
 if (-not $env:LINEAR_API_KEY) {
   Write-Host "WARNING: LINEAR_API_KEY environment variable is not set." -ForegroundColor Yellow
 }
@@ -131,13 +136,36 @@ $argString = ($argsList | ForEach-Object { "`"$_`"" }) -join " "
 
 if ($NoWait) {
   Write-Host "Starting Symphony in background..." -ForegroundColor Yellow
-  Write-Host "  Command: $symphonyExe $argString" -ForegroundColor Gray
+
+  if ($escriptCmd -and $escriptCmd.Name -eq "mise") {
+    Write-Host "  Command: mise exec -- escript $symphonyExe $argString" -ForegroundColor Gray
+  } else {
+    Write-Host "  Command: escript $symphonyExe $argString" -ForegroundColor Gray
+  }
+
   Write-Host ""
 
-  $proc = Start-Process -FilePath $symphonyExe -ArgumentList $argsList -WindowStyle Hidden -PassThru
-  $pid = $proc.Id
+  if ($escriptCmd -and $escriptCmd.Name -eq "mise") {
+    $allArgs = @("exec", "--", "escript", $symphonyExe) + $argsList
+    $proc = Start-Process -FilePath "mise" -ArgumentList $allArgs -WindowStyle Hidden -PassThru
+  } elseif ($escriptCmd) {
+    $allArgs = @($symphonyExe) + $argsList
+    $proc = Start-Process -FilePath "escript" -ArgumentList $allArgs -WindowStyle Hidden -PassThru
+  } else {
+    $proc = Start-Process -FilePath $symphonyExe -ArgumentList $argsList -WindowStyle Hidden -PassThru
+  }
 
-  Write-Host "Process started with PID: $pid" -ForegroundColor Green
+  $procId = $proc.Id
+
+  Start-Sleep -Milliseconds 500
+
+  if (-not (Get-Process -Id $procId -ErrorAction SilentlyContinue)) {
+    Write-Host "ERROR: Process $procId exited immediately. The escript may have failed to start." -ForegroundColor Red
+    Write-Host "Try running manually: escript $symphonyExe $argString" -ForegroundColor Yellow
+    exit 1
+  }
+
+  Write-Host "Process started with PID: $procId" -ForegroundColor Green
   Write-Host "Waiting up to 15 seconds for service to become available..." -ForegroundColor Yellow
 
   $maxWait = 15
@@ -156,7 +184,7 @@ if ($NoWait) {
   if ($started) {
     Write-Host ""
     Write-Host "Symphony is running!" -ForegroundColor Green
-    Write-Host "  PID:       $pid"
+    Write-Host "  PID:       $procId"
     Write-Host "  Dashboard: http://127.0.0.1:$Port/"
     Write-Host "  API state: http://127.0.0.1:$Port/api/v1/state"
     if ($LogsRoot) {
@@ -164,24 +192,37 @@ if ($NoWait) {
     }
     Write-Host ""
     Write-Host "Check status: Invoke-RestMethod http://127.0.0.1:$Port/api/v1/state"
-    Write-Host "Stop:         Stop-Process -Id $pid"
+    Write-Host "Stop:         Stop-Process -Id $procId"
   } else {
     Write-Host ""
     Write-Host "ERROR: Symphony did not become available within $maxWait seconds." -ForegroundColor Red
     Write-Host "The process may have failed to start. Check logs if available." -ForegroundColor Yellow
 
-    if (-not (Get-Process -Id $pid -ErrorAction SilentlyContinue)) {
-      Write-Host "Process $pid has already exited." -ForegroundColor Red
+    if (-not (Get-Process -Id $procId -ErrorAction SilentlyContinue)) {
+      Write-Host "Process $procId has already exited." -ForegroundColor Red
     }
 
     exit 1
   }
 } else {
   Write-Host "Starting in foreground... Press Ctrl+C to stop." -ForegroundColor Yellow
-  Write-Host "  Command: $symphonyExe $argString" -ForegroundColor Gray
+
+  if ($escriptCmd -and $escriptCmd.Name -eq "mise") {
+    Write-Host "  Command: mise exec -- escript $symphonyExe $argString" -ForegroundColor Gray
+  } else {
+    Write-Host "  Command: escript $symphonyExe $argString" -ForegroundColor Gray
+  }
+
   Write-Host ""
 
-  & $symphonyExe $argsList
+  if ($escriptCmd -and $escriptCmd.Name -eq "mise") {
+    & mise exec -- escript $symphonyExe $argsList
+  } elseif ($escriptCmd) {
+    & escript $symphonyExe $argsList
+  } else {
+    & $symphonyExe $argsList
+  }
+
   $exitCode = $LASTEXITCODE
   Write-Host "Symphony exited with code: $exitCode" -ForegroundColor Yellow
   exit $exitCode
