@@ -231,6 +231,9 @@ defmodule SymphonyElixir.TestSupport do
           observability_render_interval_ms: 16,
           server_port: nil,
           server_host: nil,
+          review_enabled: false,
+          review_timeout_ms: 300_000,
+          review_max_concurrent: 4,
           prompt: @workflow_prompt
         ],
         overrides
@@ -271,6 +274,9 @@ defmodule SymphonyElixir.TestSupport do
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
+    review_enabled = Keyword.get(config, :review_enabled)
+    review_timeout_ms = Keyword.get(config, :review_timeout_ms)
+    review_max_concurrent = Keyword.get(config, :review_max_concurrent)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -307,6 +313,7 @@ defmodule SymphonyElixir.TestSupport do
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
+        review_yaml(review_enabled, review_timeout_ms, review_max_concurrent),
         "---",
         prompt
       ]
@@ -387,6 +394,16 @@ defmodule SymphonyElixir.TestSupport do
       host && "  host: #{yaml_value(host)}"
     ]
     |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp review_yaml(enabled, timeout_ms, max_concurrent) do
+    [
+      "review:",
+      "  enabled: #{yaml_value(enabled)}",
+      "  timeout_ms: #{yaml_value(timeout_ms)}",
+      "  max_concurrent: #{yaml_value(max_concurrent)}"
+    ]
     |> Enum.join("\n")
   end
 
