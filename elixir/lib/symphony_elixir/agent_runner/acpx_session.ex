@@ -513,7 +513,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     end
 
     monitor_ref = Port.monitor(port)
-    events = collect_output(port, monitor_ref, [], [], [], timeout_ms, recipient, issue_id)
+    events = collect_output(port, monitor_ref, [], [], "", timeout_ms, recipient, issue_id)
     cleanup_port(port, os_pid)
     events
   end
@@ -630,7 +630,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
         case EventParser.parse(line) do
           {:ok, event} -> collect_output(port, monitor_ref, [event | acc], [line | raw_acc], "", timeout_ms, nil, nil)
-          {:error, reason} -> collect_output(port, monitor_ref, acc, [line | raw_acc], "", timeout_ms, nil, {:parse_error, reason})
+          {:error, _reason} -> collect_output(port, monitor_ref, acc, [line | raw_acc], "", timeout_ms, nil, nil)
         end
 
       {^port, {:data, {:noeol, chunk}}} ->
@@ -706,12 +706,15 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     send(recipient, {:agent_worker_update, issue_id, event})
   end
 
+  defp send_parser_error(nil, _issue_id, _reason, _raw_line), do: :ok
+
   defp send_parser_error(recipient, issue_id, reason, raw_line) do
+    now = DateTime.utc_now()
     preview = truncate_text(raw_line, 200)
     send(recipient, {:agent_worker_update, issue_id, %{
       event: :parser_error,
-      timestamp: DateTime.utc_now(),
-      raw_event_at: DateTime.utc_now(),
+      timestamp: now,
+      raw_event_at: now,
       raw_preview: preview,
       payload: %{parse_error: inspect(reason)}
     }})

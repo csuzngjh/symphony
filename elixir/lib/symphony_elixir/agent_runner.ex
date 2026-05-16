@@ -47,12 +47,6 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp message_handler(recipient, issue) do
-    fn message ->
-      send_agent_update(recipient, issue, message)
-    end
-  end
-
   defp send_agent_update(recipient, %Issue{id: issue_id}, message)
        when is_binary(issue_id) and is_pid(recipient) do
     send(recipient, {:agent_worker_update, issue_id, message})
@@ -176,7 +170,7 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp acpx_options_from_config do
-    settings = Config.settings!()
+    _settings = Config.settings!()
 
     max_turns_acpx =
       case Config.settings!().agent.max_turns do

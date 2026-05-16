@@ -1581,34 +1581,21 @@ defmodule SymphonyElixir.Orchestrator do
   def reconcile_progress_source(entry) do
     current_source = Map.get(entry, :progress_source, "none")
     last_raw = Map.get(entry, :last_raw_event_at)
-    started_at = Map.get(entry, :started_at)
-    last_process = Map.get(entry, :last_process_seen_at)
 
     updated_source =
       cond do
-        current_source == "parser_error" ->
-          current_source
-
-        current_source == "stalled_no_events" ->
+        current_source in ["parser_error", "stalled_no_events"] ->
           current_source
 
         last_raw != nil ->
-          case Map.get(entry, :consecutive_parser_errors, 0) > @max_consecutive_parser_errors do
-            true -> "parser_error"
-            false -> "raw_event"
-          end
-
-        current_source == "process_alive" and started_at != nil ->
-          elapsed = DateTime.diff(DateTime.utc_now(), started_at, :second)
-          if elapsed > @stalled_no_events_grace_seconds and last_raw == nil do
-            "stalled_no_events"
+          if Map.get(entry, :consecutive_parser_errors, 0) > @max_consecutive_parser_errors do
+            "parser_error"
           else
-            current_source
+            "raw_event"
           end
 
-        current_source == "process_alive" and last_process != nil ->
-          elapsed = DateTime.diff(DateTime.utc_now(), last_process, :second)
-          if elapsed > @stalled_no_events_grace_seconds and last_raw == nil do
+        current_source == "process_alive" ->
+          if stalled_past_grace?(entry) do
             "stalled_no_events"
           else
             current_source
@@ -1624,6 +1611,14 @@ defmodule SymphonyElixir.Orchestrator do
     else
       entry
     end
+  end
+
+  defp stalled_past_grace?(entry) do
+    reference_time = Map.get(entry, :started_at) || Map.get(entry, :last_process_seen_at)
+    last_raw = Map.get(entry, :last_raw_event_at)
+
+    reference_time != nil and last_raw == nil and
+      DateTime.diff(DateTime.utc_now(), reference_time, :second) > @stalled_no_events_grace_seconds
   end
 
   defp maybe_block_on_boundary_violation(state, issue_id, running_entry, update) do
@@ -1671,7 +1666,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp extract_event_text(%{payload: payload}) when is_binary(payload), do: payload
   defp extract_event_text(_), do: ""
 
-  defp detect_boundary_violation(text, state) when is_binary(text) do
+  defp detect_boundary_violation(text, _state) when is_binary(text) do
     config = Config.settings!()
     source_checkout_path = config.workspace.source_checkout_path
 
