@@ -516,10 +516,50 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
       assert parse_session_id_from_output(output) == "sess-first-match"
     end
 
-    test "returns integer acpxRecordId when value is not a string" do
+    test "converts integer acpxRecordId to string" do
       output = ~s({"acpxRecordId":12345})
 
-      assert parse_session_id_from_output(output) == 12345
+      assert parse_session_id_from_output(output) == "12345"
+    end
+  end
+
+  describe "parse_session_ensure_result/1 (private logic)" do
+    test "parses output with both acpxRecordId and acpxSessionId" do
+      output = ~s({"acpxRecordId":"record-123","acpxSessionId":"session-456","status":"created"})
+
+      assert {:ok, result} = parse_session_ensure_result(output)
+      assert result.acpx_record_id == "record-123"
+      assert result.session_id == "session-456"
+    end
+
+    test "parses nested acpxRecordId and acpxSessionId" do
+      output = ~s({"result":{"acpxRecordId":"record-789","acpxSessionId":"session-012"}})
+
+      assert {:ok, result} = parse_session_ensure_result(output)
+      assert result.acpx_record_id == "record-789"
+      assert result.session_id == "session-012"
+    end
+
+    test "returns error when acpxRecordId is missing" do
+      output = ~s({"status":"ok","message":"done"})
+
+      assert {:error, {:missing_acpx_record_id, _}} = parse_session_ensure_result(output)
+    end
+
+    test "returns error for empty output" do
+      assert {:error, :missing_acpx_record_id} = parse_session_ensure_result("")
+    end
+
+    test "returns error for non-JSON output" do
+      assert {:error, :missing_acpx_record_id} = parse_session_ensure_result("some log output")
+    end
+
+    test "uses acpxSessionId as session_id fallback when present" do
+      output = ~s({"acpxRecordId":"record-abc"})
+
+      assert {:ok, result} = parse_session_ensure_result(output)
+      assert result.acpx_record_id == "record-abc"
+      assert result.session_id == "record-abc"
     end
   end
 
@@ -733,6 +773,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
   defp build_exec_args(agent, path, opts, cwd), do: AcpxSession.__testing__().build_exec_args.(agent, path, opts, cwd)
   defp classify_exit_status(code, output), do: AcpxSession.__testing__().classify_exit_status.(code, output)
   defp parse_session_id_from_output(output), do: AcpxSession.__testing__().parse_session_id_from_output.(output)
+  defp parse_session_ensure_result(output), do: AcpxSession.__testing__().parse_session_ensure_result.(output)
   defp agent_subcommand(agent), do: AcpxSession.__testing__().agent_subcommand.(agent)
   defp adapt_acpx_event(type, data), do: AcpxSession.__testing__().adapt_acpx_event.(type, data)
   defp extract_usage_from_acpx(usage), do: AcpxSession.__testing__().extract_usage_from_acpx.(usage)
