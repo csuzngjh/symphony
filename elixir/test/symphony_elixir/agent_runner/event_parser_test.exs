@@ -162,5 +162,53 @@ defmodule SymphonyElixir.AgentRunner.EventParserTest do
     test "handles empty events list" do
       assert %{status: "completed", events: []} = EventParser.extract_result([])
     end
+
+    test "collects output from flat string content (fake ACPX format)" do
+      events = [
+        %{type: :agent_thought_chunk, data: %{"content" => "thinking flat"}},
+        %{type: :agent_message_chunk, data: %{"content" => "hello flat"}}
+      ]
+
+      result = EventParser.extract_result(events)
+      assert result.output == "thinking flathello flat"
+    end
+
+    test "collects output from update wrapper format" do
+      events = [
+        %{type: :agent_message_chunk, data: %{"update" => %{"content" => "wrapped content"}}}
+      ]
+
+      result = EventParser.extract_result(events)
+      assert result.output == "wrapped content"
+    end
+
+    test "does not crash when update key is nil" do
+      events = [
+        %{type: :agent_message_chunk, data: %{"update" => nil}}
+      ]
+
+      result = EventParser.extract_result(events)
+      assert result.output == ""
+    end
+
+    test "returns empty string when no content field exists" do
+      events = [
+        %{type: :agent_message_chunk, data: %{"other" => "irrelevant"}}
+      ]
+
+      result = EventParser.extract_result(events)
+      assert result.output == ""
+    end
+
+    test "handles mixed nested and flat content formats" do
+      events = [
+        %{type: :agent_thought_chunk, data: %{"content" => %{"text" => "nested"}}},
+        %{type: :agent_message_chunk, data: %{"content" => "flat"}},
+        %{type: :agent_message_chunk, data: %{"update" => %{"content" => "wrapped"}}}
+      ]
+
+      result = EventParser.extract_result(events)
+      assert result.output == "nestedflatwrapped"
+    end
   end
 end

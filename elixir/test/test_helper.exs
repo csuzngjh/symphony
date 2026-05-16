@@ -1,5 +1,8 @@
 target = System.get_env("TEST_TARGET", "local")
 
+# Clean up any stale ACPX_COMMAND_ORIGINAL from a previous crashed test run
+System.delete_env("ACPX_COMMAND_ORIGINAL")
+
 # Default: use fake ACPX for fast, deterministic tests.
 # Real ACPX/Claude smoke tests require explicit opt-in.
 fake_acpx_js = Path.join(__DIR__, "fixtures/fake_acpx.js")

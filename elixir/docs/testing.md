@@ -31,6 +31,8 @@ SYMPHONY_RUN_LIVE_E2E=1 mix test --include live_e2e
 
 `test/fixtures/fake_acpx.js` is a Node.js script that mimics the ACPX CLI JSON-RPC 2.0 output. The test helper sets `ACPX_COMMAND` to this fixture by default.
 
+**Prerequisites**: Node.js must be available on `PATH`. `AcpxCli.resolve_strategy/3` routes `.js` files through `{:node_js, node, path}` automatically.
+
 ### Modes
 
 Controlled by `FAKE_ACPX_MODE` env var:

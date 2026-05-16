@@ -20,10 +20,21 @@ defmodule SymphonyElixir.FakeAcpxTest do
         if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5000)
       end)
 
-      {:ok, _session_id} = AcpxSession.sessions_new(pid, "fake-success-test", "/tmp")
+      {:ok, session_id} = AcpxSession.sessions_new(pid, "fake-success-test", "/tmp")
+      assert is_binary(session_id) and session_id != ""
+
       {:ok, result} = AcpxSession.prompt(pid, "hello", [])
 
       assert result.status == "completed"
+      assert result.output =~ "Hello from fake ACPX."
+      assert result.output =~ "Task completed by fake ACPX."
+      assert result.usage != nil
+      assert result.usage["inputTokens"] == 100
+      assert result.usage["outputTokens"] == 50
+      assert result.usage["totalTokens"] == 150
+
+      tool_call_events = Enum.filter(result.events, fn e -> e.type == :tool_call end)
+      assert length(tool_call_events) == 1
     end
   end
 

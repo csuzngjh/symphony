@@ -24,18 +24,12 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
 
   describe "resolve_strategy/3" do
     test "ACPX_COMMAND env var overrides everything" do
-      original = System.get_env("ACPX_COMMAND")
+      System.put_env("ACPX_COMMAND", "/usr/local/bin/acpx")
+      file_resolver = fn _ -> true end
+      exe_resolver = fn _ -> nil end
+      npm_resolver = fn -> {"", 1} end
 
-      try do
-        System.put_env("ACPX_COMMAND", "/usr/local/bin/acpx")
-        file_resolver = fn _ -> true end
-        exe_resolver = fn _ -> nil end
-        npm_resolver = fn -> {"", 1} end
-
-        assert {:direct, "/usr/local/bin/acpx"} = AcpxCli.resolve_strategy(file_resolver, exe_resolver, npm_resolver)
-      after
-        if original, do: System.put_env("ACPX_COMMAND", original), else: System.delete_env("ACPX_COMMAND")
-      end
+      assert {:direct, "/usr/local/bin/acpx"} = AcpxCli.resolve_strategy(file_resolver, exe_resolver, npm_resolver)
     end
 
     test "POSIX returns direct when acpx is real executable" do
