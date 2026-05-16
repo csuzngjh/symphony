@@ -177,7 +177,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
     end
 
     test "includes custom cwd from options" do
-      args = build_global_args(%{cwd: "/project/root"})
+      args = build_global_args(%{}, "/project/root")
 
       assert Enum.at(args, 4) == "/project/root"
     end
@@ -721,11 +721,16 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
   # Delegate to AcpxSession.__testing__() instead of copying private functions.
   # This ensures tests break if the private function signatures change.
   defp build_exec_command(strategy, args), do: AcpxSession.__testing__().build_exec_command.(strategy, args)
-  defp build_global_args(opts), do: AcpxSession.__testing__().build_global_args.(opts)
-  defp build_sessions_ensure_args(agent, name, opts), do: AcpxSession.__testing__().build_sessions_ensure_args.(agent, name, opts)
-  defp build_sessions_new_args(agent, name, opts), do: AcpxSession.__testing__().build_sessions_new_args.(agent, name, opts)
-  defp build_prompt_args(agent, name, path, opts), do: AcpxSession.__testing__().build_prompt_args.(agent, name, path, opts)
-  defp build_exec_args(agent, path, opts), do: AcpxSession.__testing__().build_exec_args.(agent, path, opts)
+  defp build_global_args(opts), do: AcpxSession.__testing__().build_global_args.(opts, nil)
+  defp build_global_args(opts, cwd), do: AcpxSession.__testing__().build_global_args.(opts, cwd)
+  defp build_sessions_ensure_args(agent, name, opts), do: AcpxSession.__testing__().build_sessions_ensure_args.(agent, name, opts, nil)
+  defp build_sessions_ensure_args(agent, name, opts, cwd), do: AcpxSession.__testing__().build_sessions_ensure_args.(agent, name, opts, cwd)
+  defp build_sessions_new_args(agent, name, opts), do: AcpxSession.__testing__().build_sessions_new_args.(agent, name, opts, nil)
+  defp build_sessions_new_args(agent, name, opts, cwd), do: AcpxSession.__testing__().build_sessions_new_args.(agent, name, opts, cwd)
+  defp build_prompt_args(agent, name, path, opts), do: AcpxSession.__testing__().build_prompt_args.(agent, name, path, opts, nil)
+  defp build_prompt_args(agent, name, path, opts, cwd), do: AcpxSession.__testing__().build_prompt_args.(agent, name, path, opts, cwd)
+  defp build_exec_args(agent, path, opts), do: AcpxSession.__testing__().build_exec_args.(agent, path, opts, nil)
+  defp build_exec_args(agent, path, opts, cwd), do: AcpxSession.__testing__().build_exec_args.(agent, path, opts, cwd)
   defp classify_exit_status(code, output), do: AcpxSession.__testing__().classify_exit_status.(code, output)
   defp parse_session_id_from_output(output), do: AcpxSession.__testing__().parse_session_id_from_output.(output)
   defp agent_subcommand(agent), do: AcpxSession.__testing__().agent_subcommand.(agent)

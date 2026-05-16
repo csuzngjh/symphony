@@ -53,6 +53,82 @@ defmodule SymphonyElixir.Workspace do
     Path.join(Config.settings!().workspace.root, safe_id)
   end
 
+  @spec validate_worker_workspace(String.t()) :: :ok | {:error, term()}
+  def validate_worker_workspace(workspace_path) when is_binary(workspace_path) do
+    config = Config.settings!()
+    source_checkout_path = config.workspace.source_checkout_path
+
+    cond do
+      not File.dir?(workspace_path) ->
+        {:error, {:workspace_not_found, workspace_path}}
+
+      not File.dir?(Path.join(workspace_path, ".git")) ->
+        {:error, {:workspace_not_git_repo, workspace_path}}
+
+      source_checkout_path != nil and source_checkout_path != "" ->
+        case PathSafety.canonicalize(source_checkout_path) do
+          {:ok, canonical_source} ->
+            case git_toplevel(workspace_path) do
+              {:ok, git_root} ->
+                canonical_git = git_root |> resolve_long_path() |> normalize_path_for_cmp()
+                canonical_source_norm = canonical_source |> resolve_long_path() |> normalize_path_for_cmp()
+                canonical_workspace = resolve_long_path(workspace_path) |> normalize_path_for_cmp()
+
+                cond do
+                  canonical_git == canonical_source_norm ->
+                    {:error, {:workspace_is_source_checkout, workspace_path}}
+
+                  canonical_git != canonical_workspace ->
+                    {:error, {:workspace_git_root_mismatch, workspace_path, git_root}}
+
+                  true ->
+                    :ok
+                end
+
+              {:error, reason} ->
+                {:error, {:workspace_git_check_failed, workspace_path, reason}}
+            end
+
+          {:error, reason} ->
+            {:error, {:source_checkout_path_invalid, source_checkout_path, reason}}
+        end
+
+      true ->
+        case git_toplevel(workspace_path) do
+          {:ok, git_root} ->
+            canonical_workspace = resolve_long_path(workspace_path) |> normalize_path_for_cmp()
+            canonical_git = git_root |> resolve_long_path() |> normalize_path_for_cmp()
+
+            if canonical_git == canonical_workspace do
+              :ok
+            else
+              {:error, {:workspace_git_root_mismatch, workspace_path, git_root}}
+            end
+
+          {:error, reason} ->
+            {:error, {:workspace_git_check_failed, workspace_path, reason}}
+        end
+    end
+  end
+
+  defp git_toplevel(workspace_path) do
+    case git_cmd_with_timeout(["rev-parse", "--show-toplevel"],
+           stderr_to_stdout: true,
+           cd: workspace_path
+         ) do
+      {output, 0} ->
+        {:ok, String.trim(output)}
+
+      {output, _status} ->
+        {:error, output}
+
+      nil ->
+        {:error, :timeout}
+    end
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
   defp ensure_workspace(workspace, nil) do
     cond do
       File.dir?(workspace) and File.dir?(Path.join(workspace, ".git")) ->
@@ -569,6 +645,36 @@ defmodule SymphonyElixir.Workspace do
 
   defp normalize_separators(path) when is_binary(path) do
     String.replace(path, "\\", "/")
+  end
+
+  defp normalize_path_for_cmp(path) when is_binary(path) do
+    path |> String.replace("\\", "/") |> String.downcase()
+  end
+
+  defp resolve_long_path(path) when is_binary(path) do
+    if match?({:win32, _}, :os.type()) do
+      pwsh = find_pwsh()
+      escaped_path = String.replace(path, "'", "''")
+      cmd = "[System.IO.Path]::GetFullPath('" <> escaped_path <> "')"
+      case System.cmd(pwsh, ["-NoProfile", "-Command", cmd],
+             stderr_to_stdout: true) do
+        {result, 0} -> String.trim(result)
+        _ -> Path.expand(path)
+      end
+    else
+      path
+    end
+  rescue
+    _ -> Path.expand(path)
+  end
+
+  defp find_pwsh do
+    candidates = [
+      System.find_executable("pwsh"),
+      "C:/Program Files/PowerShell/7/pwsh.exe",
+      "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+    ]
+    Enum.find(candidates, &(&1 != nil and File.exists?(&1))) || "pwsh"
   end
 
   defp remote_shell_assign(variable_name, raw_path)

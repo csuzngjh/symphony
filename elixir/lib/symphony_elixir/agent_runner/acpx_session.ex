@@ -241,7 +241,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
       strategy ->
         opts = state.acpx_options
-        args = build_sessions_ensure_args(state.agent, state.session_name, opts)
+        args = build_sessions_ensure_args(state.agent, state.session_name, opts, state.cwd)
 
         Logger.info("Ensuring acpx session: #{state.session_name} agent=#{state.agent}")
 
@@ -264,7 +264,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
       strategy ->
         opts = state.acpx_options
-        args = build_sessions_new_args(state.agent, state.session_name, opts)
+        args = build_sessions_new_args(state.agent, state.session_name, opts, state.cwd)
 
         Logger.info("Creating acpx session: #{state.session_name} agent=#{state.agent}")
 
@@ -310,7 +310,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       strategy ->
         opts = state.acpx_options
         tmp_path = write_prompt_tmp(prompt_text)
-        args = build_prompt_args(state.agent, state.session_name, tmp_path, opts)
+        args = build_prompt_args(state.agent, state.session_name, tmp_path, opts, state.cwd)
 
         Logger.info("Sending acpx prompt: session=#{state.session_name} turn=#{state.turn_number}")
 
@@ -342,7 +342,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       strategy ->
         opts = state.acpx_options
         tmp_path = write_prompt_tmp(prompt)
-        args = build_exec_args(state.agent, tmp_path, opts)
+        args = build_exec_args(state.agent, tmp_path, opts, state.cwd)
 
         case execute_acpx_streaming(strategy, args, state.cwd, stream_timeout_ms(state)) do
           {:error, _} = error ->
@@ -364,22 +364,25 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     end
   end
 
-  defp build_global_args(opts) do
+  defp build_global_args(opts, cwd) do
     args = ["--format", "json", "--json-strict"]
-    args = add_cwd_flag(args, opts)
+    args = add_cwd_flag(args, cwd)
     args = add_permission_flags(args, opts)
     args = add_acpx_global_flags(args, opts)
     args
   end
 
-  defp add_cwd_flag(args, opts) do
-    cwd = opts[:cwd] || "."
+  defp add_cwd_flag(args, cwd) when is_binary(cwd) and cwd != "" do
     args ++ ["--cwd", cwd]
   end
 
-  defp build_sessions_ensure_args(agent, session_name, opts) do
+  defp add_cwd_flag(args, _cwd) do
+    args ++ ["--cwd", "."]
+  end
+
+  defp build_sessions_ensure_args(agent, session_name, opts, cwd) do
     agent_sub = agent_subcommand(agent)
-    args = build_global_args(opts)
+    args = build_global_args(opts, cwd)
     args = args ++ [agent_sub, "sessions", "ensure"]
 
     args =
@@ -392,9 +395,9 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     args
   end
 
-  defp build_sessions_new_args(agent, session_name, opts) do
+  defp build_sessions_new_args(agent, session_name, opts, cwd) do
     agent_sub = agent_subcommand(agent)
-    args = build_global_args(opts)
+    args = build_global_args(opts, cwd)
     args = args ++ [agent_sub, "sessions", "new"]
 
     args =
@@ -407,16 +410,16 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     args
   end
 
-  defp build_prompt_args(agent, session_name, prompt_file_path, opts) do
+  defp build_prompt_args(agent, session_name, prompt_file_path, opts, cwd) do
     agent_sub = agent_subcommand(agent)
-    args = build_global_args(opts)
+    args = build_global_args(opts, cwd)
     args = args ++ [agent_sub, "prompt", "-s", session_name, "-f", prompt_file_path]
     args
   end
 
-  defp build_exec_args(agent, prompt_file_path, opts) do
+  defp build_exec_args(agent, prompt_file_path, opts, cwd) do
     agent_sub = agent_subcommand(agent)
-    args = build_global_args(opts)
+    args = build_global_args(opts, cwd)
     args = args ++ [agent_sub, "exec", "-f", prompt_file_path]
     args
   end
@@ -812,11 +815,11 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
   def __testing__ do
     %{
       build_exec_command: &build_exec_command/2,
-      build_global_args: &build_global_args/1,
-      build_sessions_ensure_args: &build_sessions_ensure_args/3,
-      build_sessions_new_args: &build_sessions_new_args/3,
-      build_prompt_args: &build_prompt_args/4,
-      build_exec_args: &build_exec_args/3,
+      build_global_args: &build_global_args/2,
+      build_sessions_ensure_args: &build_sessions_ensure_args/4,
+      build_sessions_new_args: &build_sessions_new_args/4,
+      build_prompt_args: &build_prompt_args/5,
+      build_exec_args: &build_exec_args/4,
       classify_exit_status: &classify_exit_status/2,
       parse_session_id_from_output: &parse_session_id_from_output/1,
       agent_subcommand: &agent_subcommand/1,

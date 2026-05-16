@@ -14,11 +14,18 @@ defmodule SymphonyElixir.PromptBuilder do
       |> prompt_template!()
       |> parse_template!()
 
+    config = Config.settings!()
+
+    workspace_path = Keyword.get(opts, :workspace_path)
+    source_checkout_path = Keyword.get(opts, :source_checkout_path) || config.workspace.source_checkout_path
+
     template
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
+        "issue" => issue |> Map.from_struct() |> to_solid_map(),
+        "workspace_path" => workspace_path,
+        "source_checkout_path" => source_checkout_path
       },
       @render_opts
     )

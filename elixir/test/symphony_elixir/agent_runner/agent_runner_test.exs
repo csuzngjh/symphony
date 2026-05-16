@@ -148,19 +148,19 @@ defmodule SymphonyElixir.AgentRunnerTest do
         labels: []
       }
 
-      prompt = delegate(:build_turn_prompt).(issue, [], 1, 20)
+      prompt = delegate(:build_turn_prompt).(issue, [], 1, 20, "/workspace/MT-1")
       assert is_binary(prompt)
       assert prompt =~ "MT-1"
     end
 
     test "continuation turns include guidance" do
-      prompt = delegate(:build_turn_prompt).(%Issue{}, [], 3, 20)
+      prompt = delegate(:build_turn_prompt).(%Issue{}, [], 3, 20, "/workspace/test")
       assert prompt =~ "continuation turn #3"
       assert prompt =~ "20"
     end
 
     test "continuation turn shows unlimited when max_turns is -1" do
-      prompt = delegate(:build_turn_prompt).(%Issue{}, [], 2, -1)
+      prompt = delegate(:build_turn_prompt).(%Issue{}, [], 2, -1, "/workspace/test")
       assert prompt =~ "unlimited"
     end
   end

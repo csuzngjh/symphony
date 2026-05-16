@@ -34,7 +34,8 @@ defmodule SymphonyElixir.AgentRunner do
         send_worker_runtime_info(update_recipient, issue, worker_host, workspace)
 
         try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
+          with :ok <- Workspace.validate_worker_workspace(workspace),
+               :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
             run_agent_turns(workspace, issue, update_recipient, opts, worker_host)
           end
         after
@@ -148,7 +149,7 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp do_run_turns(mode, session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns, workspace)
     send_fn = if mode == :prompt, do: &AcpxSession.prompt/2, else: &AcpxSession.exec/2
 
     send_phase_update(update_recipient, issue, "prompt_sent_turn_#{turn_number}", "issue-#{issue.id}")
@@ -226,9 +227,11 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns, workspace) do
+    PromptBuilder.build_prompt(issue, Keyword.put(opts, :workspace_path, workspace))
+  end
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+  defp build_turn_prompt(_issue, _opts, turn_number, max_turns, _workspace) do
     """
     Continuation guidance:
 
@@ -309,7 +312,7 @@ defmodule SymphonyElixir.AgentRunner do
       acpx_options_from_config: &acpx_options_from_config/0,
       timeout_seconds: &timeout_seconds/1,
       agent_name_from_config: &agent_name_from_config/0,
-      build_turn_prompt: &build_turn_prompt/4,
+      build_turn_prompt: &build_turn_prompt/5,
       send_agent_update: &send_agent_update/3,
       send_worker_runtime_info: &send_worker_runtime_info/4,
       normalize_issue_state: &normalize_issue_state/1,
