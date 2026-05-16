@@ -1516,6 +1516,12 @@ defmodule SymphonyElixir.Orchestrator do
         _ -> {Map.get(running_entry, :phase), nil}
       end
 
+    consecutive_parser_errors =
+      case event do
+        :parser_error -> (Map.get(running_entry, :consecutive_parser_errors, 0) + 1)
+        _ -> 0
+      end
+
     merged =
       Map.merge(running_entry, %{
         last_agent_timestamp: timestamp,
@@ -1538,23 +1544,81 @@ defmodule SymphonyElixir.Orchestrator do
         agent_last_reported_cached_read_tokens: max(last_reported_cached_read, Map.get(token_delta, :cached_read_reported, 0)),
         agent_last_reported_cached_write_tokens: max(last_reported_cached_write, Map.get(token_delta, :cached_write_reported, 0)),
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update),
+        consecutive_parser_errors: consecutive_parser_errors,
         progress_source: update_progress_source(Map.merge(running_entry, %{
           last_raw_event_at: Map.get(update, :raw_event_at) || Map.get(running_entry, :last_raw_event_at),
           last_workspace_activity_at: Map.get(running_entry, :last_workspace_activity_at),
-          last_process_seen_at: Map.get(running_entry, :last_process_seen_at)
+          last_process_seen_at: Map.get(running_entry, :last_process_seen_at),
+          consecutive_parser_errors: consecutive_parser_errors
         }))
       })
 
     {merged, token_delta}
   end
 
+  @max_consecutive_parser_errors 3
+  @stalled_no_events_grace_seconds 60
+
   defp update_progress_source(running_entry) do
     cond do
-      Map.get(running_entry, :last_raw_event_at) != nil -> "raw_event"
+      Map.get(running_entry, :last_raw_event_at) != nil ->
+        case Map.get(running_entry, :consecutive_parser_errors, 0) > @max_consecutive_parser_errors do
+          true -> "parser_error"
+          false -> "raw_event"
+        end
       Map.get(running_entry, :last_workspace_activity_at) != nil -> "workspace_activity"
       Map.get(running_entry, :last_process_seen_at) != nil -> "process_alive"
       true -> "none"
     end
+  end
+
+  @doc """
+  Reconcile progress source for running entries that have been alive for a
+  bounded grace period but never produced a raw event. Used by the status
+  reconciliation loop to escalate ambiguous states.
+  """
+  @spec reconcile_progress_source(map()) :: map()
+  def reconcile_progress_source(entry) do
+    current_source = Map.get(entry, :progress_source, "none")
+    last_raw = Map.get(entry, :last_raw_event_at)
+
+    updated_source =
+      cond do
+        current_source in ["parser_error", "stalled_no_events"] ->
+          current_source
+
+        last_raw != nil ->
+          if Map.get(entry, :consecutive_parser_errors, 0) > @max_consecutive_parser_errors do
+            "parser_error"
+          else
+            "raw_event"
+          end
+
+        current_source == "process_alive" ->
+          if stalled_past_grace?(entry) do
+            "stalled_no_events"
+          else
+            current_source
+          end
+
+        true ->
+          current_source
+      end
+
+    if updated_source != current_source do
+      Logger.info("Progress source escalated: #{current_source} -> #{updated_source} for issue_id=#{Map.get(entry, :issue_id)}")
+      Map.put(entry, :progress_source, updated_source)
+    else
+      entry
+    end
+  end
+
+  defp stalled_past_grace?(entry) do
+    reference_time = Map.get(entry, :started_at) || Map.get(entry, :last_process_seen_at)
+    last_raw = Map.get(entry, :last_raw_event_at)
+
+    reference_time != nil and last_raw == nil and
+      DateTime.diff(DateTime.utc_now(), reference_time, :second) > @stalled_no_events_grace_seconds
   end
 
   defp maybe_block_on_boundary_violation(state, issue_id, running_entry, update) do
@@ -1602,7 +1666,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp extract_event_text(%{payload: payload}) when is_binary(payload), do: payload
   defp extract_event_text(_), do: ""
 
-  defp detect_boundary_violation(text, state) when is_binary(text) do
+  defp detect_boundary_violation(text, _state) when is_binary(text) do
     config = Config.settings!()
     source_checkout_path = config.workspace.source_checkout_path
 

@@ -126,8 +126,11 @@ defmodule SymphonyElixirWeb.Presenter do
       tokens: %{
         input_tokens: entry.agent_input_tokens,
         output_tokens: entry.agent_output_tokens,
-        total_tokens: entry.agent_total_tokens
-      }
+        total_tokens: entry.agent_total_tokens,
+        cached_read_tokens: Map.get(entry, :agent_cached_read_tokens, 0),
+        cached_write_tokens: Map.get(entry, :agent_cached_write_tokens, 0)
+      },
+      consecutive_parser_errors: Map.get(entry, :consecutive_parser_errors, 0)
     }
   end
 
@@ -158,10 +161,13 @@ defmodule SymphonyElixirWeb.Presenter do
       last_progress_at: iso8601(latest_progress_at(running)),
       last_workspace_activity_at: iso8601(Map.get(running, :last_workspace_activity_at)),
       process_alive: process_alive?(running),
+      consecutive_parser_errors: Map.get(running, :consecutive_parser_errors, 0),
       tokens: %{
         input_tokens: running.agent_input_tokens,
         output_tokens: running.agent_output_tokens,
-        total_tokens: running.agent_total_tokens
+        total_tokens: running.agent_total_tokens,
+        cached_read_tokens: Map.get(running, :agent_cached_read_tokens, 0),
+        cached_write_tokens: Map.get(running, :agent_cached_write_tokens, 0)
       }
     }
   end

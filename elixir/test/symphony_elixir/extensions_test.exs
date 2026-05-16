@@ -366,7 +366,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_progress_at" => nil,
                  "last_workspace_activity_at" => nil,
                  "process_alive" => false,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+                 "consecutive_parser_errors" => 0,
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12, "cached_read_tokens" => 0, "cached_write_tokens" => 0}
                }
              ],
              "retrying" => [
@@ -416,7 +417,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_progress_at" => nil,
                "last_workspace_activity_at" => nil,
                "process_alive" => false,
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+               "consecutive_parser_errors" => 0,
+               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12, "cached_read_tokens" => 0, "cached_write_tokens" => 0}
              },
              "blocked" => nil,
              "retry" => nil,
