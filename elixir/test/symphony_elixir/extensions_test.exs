@@ -395,12 +395,17 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
 
+    expected_workspace_path = Path.join(Config.settings!().workspace.root, "MT-HTTP") |> String.replace("\\", "/")
+    actual_workspace_path = (issue_payload["workspace"]["path"] || "") |> String.replace("\\", "/")
+
+    assert actual_workspace_path == expected_workspace_path
+
     assert issue_payload == %{
              "issue_identifier" => "MT-HTTP",
              "issue_id" => "issue-http",
              "status" => "running",
              "workspace" => %{
-               "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
+               "path" => issue_payload["workspace"]["path"],
                "host" => nil
              },
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
@@ -408,11 +413,17 @@ defmodule SymphonyElixir.ExtensionsTest do
                "worker_host" => nil,
                "workspace_path" => nil,
                "session_id" => "thread-http",
+               "session_name" => nil,
                "acpx_record_id" => nil,
+               "attempt_id" => nil,
+               "attempt_status" => "running",
+               "phase" => nil,
                "turn_count" => 7,
                "state" => "In Progress",
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
+               "last_raw_event_at" => nil,
+               "last_raw_preview" => nil,
                "last_message" => "rendered",
                "last_event_at" => nil,
                "progress_source" => "none",

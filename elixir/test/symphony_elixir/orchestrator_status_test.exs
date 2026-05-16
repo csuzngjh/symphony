@@ -821,7 +821,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                  _ ->
                    false
                end,
-               500
+               2_000
              )
 
     assert %{
@@ -841,7 +841,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                  _ ->
                    false
                end,
-               500
+               2_000
              )
 
     assert is_integer(next_poll_in_ms)

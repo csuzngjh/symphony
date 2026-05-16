@@ -57,18 +57,25 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
           case :file.open(path, [:read, :binary, :raw]) do
             {:ok, file} ->
               try do
-                :file.position(file, bytes_offset)
-                data = read_bounded(file, bytes_to_read)
-                lines = String.split(data, "\n", trim: false)
+                case :file.position(file, bytes_offset) do
+                  {:ok, _} ->
+                    data = read_bounded(file, bytes_to_read)
+                    actual_bytes_read = byte_size(data)
+                    lines = String.split(data, "\n", trim: false)
 
-                progress =
-                  lines
-                  |> Enum.take(@max_lines_per_read)
-                  |> Enum.reduce(empty_progress(path, true, mtime, size), fn line, acc ->
-                    parse_and_merge_line(line, acc)
-                  end)
+                    progress =
+                      lines
+                      |> Enum.take(@max_lines_per_read)
+                      |> Enum.reduce(empty_progress(path, true, mtime, bytes_offset + actual_bytes_read), fn line, acc ->
+                        parse_and_merge_line(line, acc)
+                      end)
 
-                progress
+                    progress
+
+                  {:error, reason} ->
+                    Logger.debug("Cannot seek stream file #{path} to offset #{bytes_offset}: #{inspect(reason)}")
+                    empty_progress(path, true, mtime, 0)
+                end
               after
                 :file.close(file)
               end
@@ -252,7 +259,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
       parser_errors: 0,
       stream_path: path,
       stream_exists: exists,
-      stream_last_modified: mtime,
+      stream_last_modified: erlang_mtime_to_datetime(mtime),
       bytes_read: bytes_offset,
       events_parsed: 0
     }
@@ -262,11 +269,19 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
     Path.join([System.user_home(), ".acpx", "sessions"])
   end
 
+  defp erlang_mtime_to_datetime({{year, month, day}, {hour, min, sec}}) do
+    {:ok, dt} = NaiveDateTime.new(year, month, day, hour, min, sec)
+    DateTime.from_naive!(dt, "Etc/UTC")
+  end
+  defp erlang_mtime_to_datetime(_), do: nil
+
   defp read_bounded(file, max_bytes) do
     case :file.read(file, max_bytes) do
       {:ok, data} -> data
       :eof -> ""
-      {:error, _reason} -> ""
+      {:error, reason} ->
+        Logger.debug("Stream file read error: #{inspect(reason)}")
+        ""
     end
   end
 
