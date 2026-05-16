@@ -10,11 +10,11 @@ defmodule SymphonyElixir.Review.Runner do
   """
 
   require Logger
-  alias SymphonyElixir.Review.{Dimension, Result, PromptBuilder}
+  alias SymphonyElixir.Review.{Dimension, Result, PromptBuilder, Executor}
 
   @spec run(map(), String.t(), SymphonyElixir.Config.Schema.t(), keyword()) :: {:ok, [Result.t()]}
   def run(_issue, workspace_path, config, opts \\ []) do
-    executor = Keyword.get(opts, :executor, SymphonyElixir.AgentRunner.AcpxSession)
+    executor = Keyword.get(opts, :executor, Executor)
     dimensions = Dimension.all()
     timeout_ms = config.review.timeout_ms
     max_concurrent = config.review.max_concurrent
@@ -35,6 +35,10 @@ defmodule SymphonyElixir.Review.Runner do
         {{:exit, :timeout}, dim} ->
           Logger.warning("Review dimension #{dim.name} timed out after #{timeout_ms}ms")
           Result.timeout(dim.name)
+
+        {{:exit, reason}, dim} ->
+          Logger.warning("Review dimension #{dim.name} exited: #{inspect(reason)}")
+          Result.failure(dim.name, "exited: #{inspect(reason)}")
       end)
 
     {:ok, results}

@@ -285,6 +285,12 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  def handle_info({:review_completed, %Issue{id: issue_id} = issue, {:ok, results}}, %State{reviews: reviews} = state) do
+    state = %{state | reviews: Map.delete(reviews, issue_id)}
+    handle_review_result(issue, {:ok, results})
+    {:noreply, state}
+  end
+
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
@@ -2065,9 +2071,11 @@ defp apply_token_delta(agent_totals, token_delta) do
         else
           Logger.info("Starting auto review for #{issue_context(issue)} workspace=#{workspace_path}")
 
+          me = self()
+
           Task.start(fn ->
             review_result = Runner.run(issue, workspace_path, config)
-            handle_review_result(issue, review_result)
+            send(me, {:review_completed, issue, review_result})
           end)
 
           %{state | reviews: Map.put(state.reviews, issue.id, %{started_at: DateTime.utc_now()})}
@@ -2075,10 +2083,19 @@ defp apply_token_delta(agent_totals, token_delta) do
     end
   end
 
-  defp get_workspace_path_for_review(%State{running: running}, %Issue{id: issue_id}) do
+  defp get_workspace_path_for_review(%State{running: running, retry_attempts: retry_attempts}, %Issue{id: issue_id, identifier: identifier}) do
     case Map.get(running, issue_id) do
-      %{workspace_path: path} when is_binary(path) and path != "" -> path
-      _ -> nil
+      %{workspace_path: path} when is_binary(path) and path != "" ->
+        path
+
+      _ ->
+        case Map.get(retry_attempts, issue_id) do
+          %{workspace_path: path} when is_binary(path) and path != "" ->
+            path
+
+          _ ->
+            Workspace.path_for_identifier(identifier)
+        end
     end
   end
 

@@ -108,11 +108,9 @@ defmodule SymphonyElixir.Review.PromptBuilderTest do
       assert result.score == 85
     end
 
-    test "returns defaults for missing fields" do
+    test "returns error for missing required fields" do
       json = ~s({"other":"data"})
-      assert {:ok, result} = PromptBuilder.parse_response(json)
-      assert result.score == 0
-      assert result.summary == ""
+      assert {:error, "response missing required fields"} = PromptBuilder.parse_response(json)
     end
   end
 end

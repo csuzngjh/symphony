@@ -23,14 +23,23 @@ defmodule SymphonyElixir.Review.PromptBuilder do
   def parse_response(raw) do
     case Jason.decode(raw) do
       {:ok, parsed} ->
-        {:ok, normalize_result(parsed)}
+        case normalize_result(parsed) do
+          :invalid -> {:error, "response missing required fields"}
+          result -> {:ok, result}
+        end
 
       {:error, _} ->
         case extract_json_from_markdown(raw) do
           {:ok, json_str} ->
             case Jason.decode(json_str) do
-              {:ok, parsed} -> {:ok, normalize_result(parsed)}
-              {:error, _} -> {:error, "unparseable response"}
+              {:ok, parsed} ->
+                case normalize_result(parsed) do
+                  :invalid -> {:error, "response missing required fields"}
+                  result -> {:ok, result}
+                end
+
+              {:error, _} ->
+                {:error, "unparseable response"}
             end
 
           {:error, _} ->
@@ -49,7 +58,7 @@ defmodule SymphonyElixir.Review.PromptBuilder do
     }
   end
 
-  defp normalize_result(_), do: %{score: 0, summary: "", details: "", business_summary: ""}
+  defp normalize_result(_), do: :invalid
 
   defp extract_json_from_markdown(raw) do
     case Regex.run(~r/```(?:json)?\s*\n?(.*?)```/s, raw, capture: :all_but_first) do
