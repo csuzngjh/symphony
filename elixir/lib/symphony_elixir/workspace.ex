@@ -32,6 +32,27 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec path_for_identifier(String.t() | nil, worker_host()) :: String.t() | nil
+  def path_for_identifier(identifier, worker_host \\ nil)
+
+  def path_for_identifier(nil, _worker_host), do: nil
+
+  def path_for_identifier(identifier, nil) when is_binary(identifier) do
+    safe_id = safe_identifier(identifier)
+    root = Config.settings!().workspace.root
+    path = Path.join(root, safe_id)
+
+    case PathSafety.canonicalize(path) do
+      {:ok, canonical} -> canonical
+      {:error, _} -> nil
+    end
+  end
+
+  def path_for_identifier(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
+    safe_id = safe_identifier(identifier)
+    Path.join(Config.settings!().workspace.root, safe_id)
+  end
+
   defp ensure_workspace(workspace, nil) do
     cond do
       File.dir?(workspace) and File.dir?(Path.join(workspace, ".git")) ->

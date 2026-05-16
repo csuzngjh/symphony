@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace, WorkspaceActivity}
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Review.{Runner, Reporter}
 
   @default_continuation_retry_delay_ms 300_000
   @failure_retry_base_ms 10_000
@@ -42,7 +43,8 @@ defmodule SymphonyElixir.Orchestrator do
       retry_attempts: %{},
       agent_totals: nil,
       agent_rate_limits: nil,
-      blocked: %{}
+      blocked: %{},
+      reviews: %{}
     ]
   end
 
@@ -283,6 +285,12 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  def handle_info({:review_completed, %Issue{id: issue_id} = issue, {:ok, results}}, %State{reviews: reviews} = state) do
+    state = %{state | reviews: Map.delete(reviews, issue_id)}
+    handle_review_result(issue, {:ok, results})
+    {:noreply, state}
+  end
+
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
@@ -418,6 +426,9 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
         terminate_running_issue(state, issue.id, false)
+
+      auto_review_issue_state?(issue.state) ->
+        handle_auto_review_state(state, issue)
 
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
@@ -717,6 +728,7 @@ defmodule SymphonyElixir.Orchestrator do
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
+      !auto_review_issue_state?(issue.state) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       !Map.has_key?(blocked, issue.id) and
       !MapSet.member?(claimed, issue.id) and
@@ -2033,4 +2045,72 @@ defp apply_token_delta(agent_totals, token_delta) do
   end
 
   defp integer_like(_value), do: nil
+
+  defp auto_review_issue_state?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) == "auto review"
+  end
+
+  defp auto_review_issue_state?(_state_name), do: false
+
+  defp handle_auto_review_state(%State{reviews: reviews} = state, %Issue{} = issue) do
+    config = Config.settings!()
+
+    cond do
+      not config.review.enabled ->
+        state
+
+      Map.has_key?(reviews, issue.id) ->
+        state
+
+      true ->
+        workspace_path = get_workspace_path_for_review(state, issue)
+
+        if is_nil(workspace_path) do
+          Logger.warning("Cannot start auto review: no workspace path for #{issue_context(issue)}")
+          state
+        else
+          Logger.info("Starting auto review for #{issue_context(issue)} workspace=#{workspace_path}")
+
+          me = self()
+
+          Task.start(fn ->
+            review_result = Runner.run(issue, workspace_path, config)
+            send(me, {:review_completed, issue, review_result})
+          end)
+
+          %{state | reviews: Map.put(state.reviews, issue.id, %{started_at: DateTime.utc_now()})}
+        end
+    end
+  end
+
+  defp get_workspace_path_for_review(%State{running: running, retry_attempts: retry_attempts}, %Issue{id: issue_id, identifier: identifier}) do
+    case Map.get(running, issue_id) do
+      %{workspace_path: path} when is_binary(path) and path != "" ->
+        path
+
+      _ ->
+        case Map.get(retry_attempts, issue_id) do
+          %{workspace_path: path} when is_binary(path) and path != "" ->
+            path
+
+          _ ->
+            Workspace.path_for_identifier(identifier)
+        end
+    end
+  end
+
+  defp handle_review_result(%Issue{} = issue, {:ok, results}) do
+    report = Reporter.build_report(results)
+    Logger.info("Auto review completed for #{issue_context(issue)}")
+
+    case Tracker.create_comment(issue.id, report) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("Failed to post review comment for #{issue_context(issue)}: #{inspect(reason)}")
+    end
+
+    case Tracker.update_issue_state(issue.id, "Human Review") do
+      :ok -> Logger.info("Transitioned #{issue_context(issue)} to Human Review")
+      {:error, reason} -> Logger.warning("Failed to transition #{issue_context(issue)} to Human Review: #{inspect(reason)}")
+    end
+  end
 end
