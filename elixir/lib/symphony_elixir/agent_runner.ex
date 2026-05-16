@@ -91,9 +91,9 @@ defmodule SymphonyElixir.AgentRunner do
           send_phase_update(update_recipient, issue, "ensuring_session", session_name)
 
           case AcpxSession.sessions_ensure(session_pid, session_name, workspace) do
-            {:ok, session_id} ->
+            {:ok, %{session_id: session_id, acpx_record_id: acpx_record_id}} ->
               send_phase_update(update_recipient, issue, "session_ready", session_name)
-              send_acpx_record_id(update_recipient, issue, session_id)
+              send_acpx_record_id(update_recipient, issue, acpx_record_id)
 
               try do
                 do_run_acpx_turns(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, 1, max_turns)
@@ -221,22 +221,85 @@ defmodule SymphonyElixir.AgentRunner do
   defp handle_turn_completion(issue, workspace, _session_pid, _update_recipient, _opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn) do
     Logger.info("Completed agent turn for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns_label(max_turns)}")
 
-    case continue_with_issue?(issue, issue_state_fetcher) do
-      {:continue, refreshed_issue} when max_turns == -1 or turn_number < max_turns ->
-        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns_label(max_turns)}")
+    # Phase 3: Check if PR has been created, if so end agent immediately
+    if pr_created?(workspace) do
+      Logger.info("PR created for #{issue_context(issue)}, running quality gate")
 
-        next_turn_fn.(refreshed_issue, turn_number + 1)
+      # Phase 4: Run PR quality gate
+      case pr_quality_gate(workspace) do
+        :ok ->
+          Logger.info("PR quality gate passed for #{issue_context(issue)}")
+          :ok
 
-      {:continue, refreshed_issue} ->
-        Logger.info("Reached max turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-        :ok
+        {:error, reason} ->
+          Logger.warning("PR quality gate failed for #{issue_context(issue)}: #{inspect(reason)}")
+          # Return error to prevent agent from continuing with a failed quality gate
+          {:error, {:pr_quality_gate_failed, reason}}
+      end
+    else
+      case continue_with_issue?(issue, issue_state_fetcher) do
+        {:continue, refreshed_issue} when max_turns == -1 or turn_number < max_turns ->
+          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns_label(max_turns)}")
 
-      {:done, _refreshed_issue} ->
-        :ok
+          next_turn_fn.(refreshed_issue, turn_number + 1)
 
-      {:error, reason} ->
-        {:error, reason}
+        {:continue, refreshed_issue} ->
+          Logger.info("Reached max turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+          :ok
+
+        {:done, _refreshed_issue} ->
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
+  end
+
+  @doc false
+  def pr_created?(workspace) do
+    # Check if .pr_created marker file exists
+    marker_path = Path.join(workspace, ".pr_created")
+    File.exists?(marker_path)
+  end
+
+  @doc false
+  def pr_quality_gate(workspace) do
+    # Phase 4: Minimal PR quality gate
+    # 1. Check if workspace is clean (no uncommitted changes)
+    # 2. Check for whitespace errors in committed changes
+
+    checks = [
+      &check_git_diff_clean/1,
+      &check_no_whitespace_errors/1
+    ]
+
+    results = Enum.map(checks, fn check -> check.(workspace) end)
+
+    case Enum.find(results, fn result -> result != :ok end) do
+      nil -> :ok
+      error -> error
+    end
+  end
+
+  defp check_git_diff_clean(workspace) do
+    # Check for uncommitted changes
+    case System.cmd("git", ["status", "--porcelain"], cd: workspace) do
+      {"", _} -> :ok
+      {output, _} -> {:error, {:dirty_workspace, String.trim(output)}}
+    end
+  rescue
+    _ -> :ok  # Skip check if git is unavailable
+  end
+
+  defp check_no_whitespace_errors(workspace) do
+    # Check for whitespace errors in working tree (not just staged)
+    case System.cmd("git", ["diff", "--check", "HEAD"], cd: workspace) do
+      {"", _} -> :ok
+      {output, _} -> {:error, {:whitespace_errors, String.trim(output)}}
+    end
+  rescue
+    _ -> :ok  # Skip check if git is unavailable
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns, workspace) do

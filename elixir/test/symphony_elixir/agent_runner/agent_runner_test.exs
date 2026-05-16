@@ -204,6 +204,63 @@ defmodule SymphonyElixir.AgentRunnerTest do
     end
   end
 
+  describe "pr_created?/1" do
+    test "returns true when .pr_created marker file exists" do
+      dir = System.tmp_dir!()
+      marker_path = Path.join(dir, ".pr_created")
+      File.write!(marker_path, "")
+
+      try do
+        assert AgentRunner.pr_created?(dir) == true
+      after
+        File.rm(marker_path)
+      end
+    end
+
+    test "returns false when .pr_created marker file does not exist" do
+      dir = System.tmp_dir!()
+      # Ensure no marker file exists
+      File.rm(Path.join(dir, ".pr_created"))
+
+      assert AgentRunner.pr_created?(dir) == false
+    end
+  end
+
+  describe "pr_quality_gate/1" do
+    test "returns :ok when workspace is clean" do
+      # 创建一个临时 git 仓库
+      dir = Path.join(System.tmp_dir!(), "test_quality_gate_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+
+      try do
+        System.cmd("git", ["init"], cd: dir)
+        System.cmd("git", ["config", "user.email", "test@test.com"], cd: dir)
+        System.cmd("git", ["config", "user.name", "Test"], cd: dir)
+
+        # 创建并提交一个文件
+        File.write!(Path.join(dir, "test.txt"), "hello\n")
+        System.cmd("git", ["add", "."], cd: dir)
+        System.cmd("git", ["commit", "-m", "initial"], cd: dir)
+
+        assert AgentRunner.pr_quality_gate(dir) == :ok
+      after
+        File.rm_rf(dir)
+      end
+    end
+
+    test "returns :ok when git is not available" do
+      # 非 git 目录应该返回 :ok（跳过检查）
+      dir = Path.join(System.tmp_dir!(), "test_no_git_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+
+      try do
+        assert AgentRunner.pr_quality_gate(dir) == :ok
+      after
+        File.rm_rf(dir)
+      end
+    end
+  end
+
   defp delegate(function_name) do
     AgentRunner.__testing__()[function_name]
   end

@@ -58,7 +58,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
   end
 
   @spec sessions_ensure(pid(), String.t(), String.t(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
+          {:ok, %{session_id: String.t(), acpx_record_id: String.t()}} | {:error, term()}
   def sessions_ensure(pid, session_name, cwd \\ ".", opts \\ []) do
     GenServer.call(pid, {:sessions_ensure, session_name, cwd, opts}, @session_create_timeout_ms)
   end
@@ -152,9 +152,9 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     updated_state = %{state | session_name: session_name, cwd: cwd}
 
     case do_sessions_ensure(updated_state) do
-      {:ok, session_id} ->
+      {:ok, %{session_id: session_id, acpx_record_id: acpx_record_id}} ->
         new_state = %{updated_state | session_id: session_id, turn_number: 0}
-        {:reply, {:ok, session_id}, new_state}
+        {:reply, {:ok, %{session_id: session_id, acpx_record_id: acpx_record_id}}, new_state}
 
       {:error, _} = error ->
         {:reply, error, state}
@@ -253,9 +253,15 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
         case execute_acpx(strategy, args, state.cwd, @session_create_timeout_ms) do
           {:ok, output} ->
-            session_id = parse_session_id_from_output(output)
-            Logger.info("Ensured acpx session: #{state.session_name} -> #{session_id}")
-            {:ok, session_id}
+            case parse_session_ensure_result(output) do
+              {:ok, %{session_id: session_id, acpx_record_id: acpx_record_id}} ->
+                Logger.info("Ensured acpx session: #{state.session_name} session_id=#{session_id} acpx_record_id=#{acpx_record_id}")
+                {:ok, %{session_id: session_id, acpx_record_id: acpx_record_id}}
+
+              {:error, reason} ->
+                Logger.error("Failed to parse acpx session ensure output: #{inspect(reason)} output=#{inspect(String.slice(output, 0, 500))}")
+                {:error, {:acpx_record_id_missing, reason}}
+            end
 
           {:error, _} = error ->
             error
@@ -602,16 +608,65 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       json_line ->
         case Jason.decode(json_line) do
           {:ok, %{"acpxRecordId" => id}} ->
-            id
+            to_string(id)
 
           {:ok, %{"result" => %{"acpxRecordId" => id}}} ->
-            id
+            to_string(id)
 
           {:ok, %{"result" => %{"acpxSessionId" => id}}} ->
-            id
+            to_string(id)
 
           _ ->
             output |> String.trim() |> String.split("\n") |> List.first() |> String.trim()
+        end
+    end
+  end
+
+  @doc """
+  Parse acpx sessions ensure output to extract both acpxRecordId and acpxSessionId.
+
+  Returns {:ok, %{session_id: String.t(), acpx_record_id: String.t()}} on success,
+  or {:error, reason} if acpxRecordId cannot be extracted.
+  """
+  @spec parse_session_ensure_result(String.t()) ::
+          {:ok, %{session_id: String.t(), acpx_record_id: String.t()}} | {:error, term()}
+  def parse_session_ensure_result(output) when is_binary(output) do
+    trimmed = String.trim(output)
+
+    json_line =
+      trimmed
+      |> String.split("\n")
+      |> Enum.map(&String.trim/1)
+      |> Enum.find(fn line ->
+        String.starts_with?(line, "{")
+      end)
+
+    case json_line do
+      nil ->
+        {:error, :missing_acpx_record_id}
+
+      line ->
+        case Jason.decode(line) do
+          {:ok, %{"acpxRecordId" => record_id, "acpxSessionId" => session_id}} ->
+            {:ok, %{session_id: to_string(session_id), acpx_record_id: to_string(record_id)}}
+
+          {:ok, %{"acpxRecordId" => record_id}} ->
+            {:ok, %{session_id: to_string(record_id), acpx_record_id: to_string(record_id)}}
+
+          {:ok, %{"result" => %{"acpxRecordId" => record_id, "acpxSessionId" => session_id}}} ->
+            {:ok, %{session_id: to_string(session_id), acpx_record_id: to_string(record_id)}}
+
+          {:ok, %{"result" => %{"acpxRecordId" => record_id}}} ->
+            {:ok, %{session_id: to_string(record_id), acpx_record_id: to_string(record_id)}}
+
+          {:ok, %{"result" => %{"acpxSessionId" => session_id}}} ->
+            {:error, {:missing_acpx_record_id, "found acpxSessionId but no acpxRecordId"}}
+
+          {:ok, _other} ->
+            {:error, {:missing_acpx_record_id, "JSON parsed but no acpxRecordId found"}}
+
+          {:error, _reason} ->
+            {:error, {:missing_acpx_record_id, "failed to parse JSON output"}}
         end
     end
   end
@@ -896,6 +951,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       build_exec_args: &build_exec_args/4,
       classify_exit_status: &classify_exit_status/2,
       parse_session_id_from_output: &parse_session_id_from_output/1,
+      parse_session_ensure_result: &parse_session_ensure_result/1,
       agent_subcommand: &agent_subcommand/1,
       adapt_acpx_event: &adapt_acpx_event/2,
       extract_usage_from_acpx: &extract_usage_from_acpx/1,
