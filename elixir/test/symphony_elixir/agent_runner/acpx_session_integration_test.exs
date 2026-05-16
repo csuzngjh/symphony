@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.AgentRunner.AcpxSessionIntegrationTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias SymphonyElixir.AgentRunner.AcpxSession
 
   describe "concurrent session start (de-singletonization)" do
