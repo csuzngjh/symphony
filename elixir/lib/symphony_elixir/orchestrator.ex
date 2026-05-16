@@ -285,9 +285,9 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  def handle_info({:review_completed, %Issue{id: issue_id} = issue, {:ok, results}}, %State{reviews: reviews} = state) do
+  def handle_info({:review_completed, %Issue{id: issue_id} = issue, result}, %State{reviews: reviews} = state) do
     state = %{state | reviews: Map.delete(reviews, issue_id)}
-    handle_review_result(issue, {:ok, results})
+    handle_review_result(issue, result)
     {:noreply, state}
   end
 
@@ -2052,12 +2052,23 @@ defp apply_token_delta(agent_totals, token_delta) do
 
   defp auto_review_issue_state?(_state_name), do: false
 
-  defp handle_auto_review_state(%State{reviews: reviews} = state, %Issue{} = issue) do
+  defp handle_auto_review_state(%State{reviews: reviews, blocked: blocked} = state, %Issue{} = issue) do
     config = Config.settings!()
 
     cond do
-      not config.review.enabled ->
+      Map.has_key?(blocked, issue.id) ->
         state
+
+      not config.review.enabled ->
+        Logger.warning("Issue in Auto Review but review is disabled: #{issue_context(issue)}; blocking to prevent silent stuck")
+
+        block_issue(state, issue.id, %{
+          identifier: issue.identifier,
+          workspace_path: nil,
+          reason: "auto_review_disabled",
+          dirty_files: [],
+          last_error: "issue in Auto Review state but review.enabled=false"
+        }, DateTime.utc_now())
 
       Map.has_key?(reviews, issue.id) ->
         state
@@ -2074,7 +2085,13 @@ defp apply_token_delta(agent_totals, token_delta) do
           me = self()
 
           Task.start(fn ->
-            review_result = Runner.run(issue, workspace_path, config)
+            review_result =
+              try do
+                Runner.run(issue, workspace_path, config)
+              rescue
+                e -> {:error, {:runner_exception, e}}
+              end
+
             send(me, {:review_completed, issue, review_result})
           end)
 
@@ -2111,6 +2128,22 @@ defp apply_token_delta(agent_totals, token_delta) do
     case Tracker.update_issue_state(issue.id, "Human Review") do
       :ok -> Logger.info("Transitioned #{issue_context(issue)} to Human Review")
       {:error, reason} -> Logger.warning("Failed to transition #{issue_context(issue)} to Human Review: #{inspect(reason)}")
+    end
+  end
+
+  defp handle_review_result(%Issue{} = issue, {:error, reason}) do
+    Logger.warning("Auto review failed for #{issue_context(issue)}: #{inspect(reason)}")
+
+    failure_message = "## 自动评审失败\n\n评审执行出错: `#{inspect(reason)}`\n\n请手动检查代码。"
+
+    case Tracker.create_comment(issue.id, failure_message) do
+      :ok -> :ok
+      {:error, comment_reason} -> Logger.warning("Failed to post review failure comment for #{issue_context(issue)}: #{inspect(comment_reason)}")
+    end
+
+    case Tracker.update_issue_state(issue.id, "Human Review") do
+      :ok -> Logger.info("Transitioned #{issue_context(issue)} to Human Review after review failure")
+      {:error, state_reason} -> Logger.warning("Failed to transition #{issue_context(issue)} to Human Review: #{inspect(state_reason)}")
     end
   end
 end
