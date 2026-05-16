@@ -91,7 +91,7 @@ defmodule SymphonyElixir.AgentRunner do
           send_phase_update(update_recipient, issue, "ensuring_session", session_name)
 
           case AcpxSession.sessions_ensure(session_pid, session_name, workspace) do
-            {:ok, %{session_id: session_id, acpx_record_id: acpx_record_id}} ->
+            {:ok, %{session_id: _session_id, acpx_record_id: acpx_record_id}} ->
               send_phase_update(update_recipient, issue, "session_ready", session_name)
               send_acpx_record_id(update_recipient, issue, acpx_record_id)
 
@@ -102,9 +102,8 @@ defmodule SymphonyElixir.AgentRunner do
               end
 
             {:error, reason} ->
-              Logger.warning("Failed to create acpx session, falling back to exec mode: #{inspect(reason)}")
-              send_phase_update(update_recipient, issue, "exec_fallback", session_name)
-              do_run_acpx_turns_exec(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, 1, max_turns)
+              Logger.error("Failed to create acpx session for #{issue_context(issue)}: #{inspect(reason)}")
+              {:error, {:session_ensure_failed, reason}}
           end
         after
           GenServer.stop(session_pid, :normal)
@@ -154,10 +153,6 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp do_run_acpx_turns(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     do_run_turns(:prompt, session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
-  end
-
-  defp do_run_acpx_turns_exec(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    do_run_turns(:exec, session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
   end
 
   defp do_run_turns(mode, session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
