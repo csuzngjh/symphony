@@ -100,5 +100,34 @@ defmodule SymphonyElixir.OrchestratorProgressReconcileTest do
 
       assert result.progress_source == "none"
     end
+
+    test "keeps acpx_session_stream as terminal state" do
+      entry = %{
+        issue_id: "ST-8",
+        progress_source: "acpx_session_stream",
+        started_at: DateTime.utc_now(),
+        last_raw_event_at: DateTime.utc_now(),
+        consecutive_parser_errors: 0
+      }
+
+      result = Orchestrator.reconcile_progress_source(entry)
+
+      assert result.progress_source == "acpx_session_stream"
+    end
+
+    test "escalates process_alive to stalled_no_events even with acpx_record_id when stream missing" do
+      entry = %{
+        issue_id: "ST-9",
+        progress_source: "process_alive",
+        started_at: DateTime.add(DateTime.utc_now(), -120, :second),
+        last_process_seen_at: DateTime.add(DateTime.utc_now(), -10, :second),
+        last_raw_event_at: nil,
+        acpx_record_id: "some-record-id"
+      }
+
+      result = Orchestrator.reconcile_progress_source(entry)
+
+      assert result.progress_source == "stalled_no_events"
+    end
   end
 end

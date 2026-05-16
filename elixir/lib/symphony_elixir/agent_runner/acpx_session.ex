@@ -229,6 +229,11 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     {:noreply, %{state | port: nil}}
   end
 
+  def handle_info(msg, state) do
+    Logger.debug("AcpxSession ignored message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
   @impl true
   def terminate(_reason, state) do
     cleanup_port(state.port, state.os_pid)
@@ -537,16 +542,16 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
   defp collect_command_output(port, monitor_ref, acc, timeout_ms) do
     receive do
       {^port, {:data, {:eol, line}}} ->
-        collect_command_output(port, monitor_ref, [line | acc], timeout_ms)
+        collect_command_output(port, monitor_ref, [{:line, line} | acc], timeout_ms)
 
       {^port, {:data, {:noeol, chunk}}} ->
-        collect_command_output(port, monitor_ref, acc ++ [to_string(chunk)], timeout_ms)
+        collect_command_output(port, monitor_ref, [{:chunk, to_string(chunk)} | acc], timeout_ms)
 
       {^port, {:exit_status, 0}} ->
-        {:ok, Enum.join(Enum.reverse(acc), "\n")}
+        {:ok, join_acc(acc)}
 
       {^port, {:exit_status, status}} ->
-        {:error, classify_exit_status(status, Enum.join(Enum.reverse(acc), "\n"))}
+        {:error, classify_exit_status(status, join_acc(acc))}
 
       {:DOWN, ^monitor_ref, :port, ^port, _reason} ->
         cleanup_port(port)
@@ -556,6 +561,16 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         cleanup_port(port)
         {:error, :timeout}
     end
+  end
+
+  defp join_acc(acc) do
+    acc
+    |> Enum.reverse()
+    |> Enum.map(fn
+      {:line, line} -> line
+      {:chunk, chunk} -> chunk
+    end)
+    |> Enum.join("\n")
   end
 
   defp classify_exit_status(0, _), do: :success

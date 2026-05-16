@@ -13,6 +13,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   @default_continuation_retry_delay_ms 300_000
   @failure_retry_base_ms 10_000
+  @max_completed_set_size 1_000
+  @blocked_ttl_seconds 86_400
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @attempt_shutdown_timeout_ms 15_000
@@ -37,6 +39,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :acpx_session_root,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
@@ -55,7 +58,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     now_ms = System.monotonic_time(:millisecond)
     config = Config.settings!()
 
@@ -67,7 +70,8 @@ defmodule SymphonyElixir.Orchestrator do
       tick_timer_ref: nil,
       tick_token: nil,
       agent_totals: @empty_agent_totals,
-      agent_rate_limits: nil
+      agent_rate_limits: nil,
+      acpx_session_root: Keyword.get(opts, :acpx_session_root)
     }
 
     run_terminal_workspace_cleanup()
@@ -124,11 +128,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
-        %{running: running} = state
+        %{running: running, reviews: reviews} = state
       ) do
     case find_issue_id_for_ref(running, ref) do
       nil ->
-        {:noreply, state}
+        handle_review_down(ref, reason, reviews, state)
 
       issue_id ->
         running_entry = Map.get(running, issue_id)
@@ -289,6 +293,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:review_completed, %Issue{id: issue_id} = issue, result}, %State{reviews: reviews} = state) do
+    case Map.get(reviews, issue_id) do
+      %{ref: ref} when is_reference(ref) ->
+        Process.demonitor(ref, [:flush])
+
+      _ ->
+        :ok
+    end
+
     state = %{state | reviews: Map.delete(reviews, issue_id)}
     handle_review_result(issue, result)
     {:noreply, state}
@@ -348,6 +360,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp reconcile_running_issues(%State{} = state) do
     state = reconcile_stalled_running_issues(state)
+    state = expire_blocked_entries(state)
     running_ids = Map.keys(state.running)
 
     if running_ids == [] do
@@ -543,6 +556,8 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry = Map.get(state_acc.running, issue_id)
           state_acc = maybe_update_process_alive(state_acc, issue_id, running_entry)
           running_entry = Map.get(state_acc.running, issue_id)
+          state_acc = maybe_poll_acpx_session_stream(state_acc, issue_id, running_entry)
+          running_entry = Map.get(state_acc.running, issue_id)
           restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
         end)
     end
@@ -624,6 +639,70 @@ defmodule SymphonyElixir.Orchestrator do
       %{state | running: Map.put(state.running, issue_id, updated)}
     else
       state
+    end
+  end
+
+  defp maybe_poll_acpx_session_stream(state, issue_id, running_entry) do
+    acpx_record_id = Map.get(running_entry, :acpx_record_id)
+
+    if is_binary(acpx_record_id) do
+      current_source = Map.get(running_entry, :progress_source, "none")
+      needs_poll = current_source in ["none", "process_alive", "stalled_no_events", "workspace_activity"]
+
+      if needs_poll do
+        stream_bytes_read = Map.get(running_entry, :stream_bytes_read, 0)
+
+        progress = SymphonyElixir.AgentRunner.AcpxSessionStream.read_progress(
+          acpx_record_id,
+          bytes_offset: stream_bytes_read,
+          session_root: state.acpx_session_root
+        )
+
+        if progress.latest_event_at != nil do
+          updated =
+            running_entry
+            |> Map.put(:last_raw_event_at, progress.latest_event_at)
+            |> Map.put(:last_raw_preview, progress.latest_preview || Map.get(running_entry, :last_raw_preview))
+            |> Map.put(:last_agent_message, progress.latest_message || Map.get(running_entry, :last_agent_message))
+            |> Map.put(:progress_source, "acpx_session_stream")
+            |> Map.put(:stream_bytes_read, progress.bytes_read)
+            |> update_token_usage_from_stream(progress)
+            |> then(fn entry ->
+              if progress.parser_errors > 0 do
+                Map.update!(entry, :consecutive_parser_errors, &(&1 + progress.parser_errors))
+              else
+                Map.put(entry, :consecutive_parser_errors, 0)
+              end
+            end)
+
+          %{state | running: Map.put(state.running, issue_id, updated)}
+        else
+          if progress.stream_exists do
+            %{state | running: Map.put(state.running, issue_id, Map.put(running_entry, :stream_bytes_read, progress.bytes_read))}
+          else
+            state
+          end
+        end
+      else
+        state
+      end
+    else
+      state
+    end
+  end
+
+  defp update_token_usage_from_stream(running_entry, progress) do
+    usage = progress.token_usage
+
+    if usage.total_tokens > 0 do
+      running_entry
+      |> Map.put(:agent_input_tokens, max(Map.get(running_entry, :agent_input_tokens, 0), usage.input_tokens))
+      |> Map.put(:agent_output_tokens, max(Map.get(running_entry, :agent_output_tokens, 0), usage.output_tokens))
+      |> Map.put(:agent_total_tokens, max(Map.get(running_entry, :agent_total_tokens, 0), usage.total_tokens))
+      |> Map.put(:agent_cached_read_tokens, max(Map.get(running_entry, :agent_cached_read_tokens, 0), usage.cached_read_tokens))
+      |> Map.put(:agent_cached_write_tokens, max(Map.get(running_entry, :agent_cached_write_tokens, 0), usage.cached_write_tokens))
+    else
+      running_entry
     end
   end
 
@@ -917,7 +996,9 @@ defmodule SymphonyElixir.Orchestrator do
             last_workspace_activity_at: nil,
             last_workspace_activity_scan_at: nil,
             last_process_seen_at: nil,
-            progress_source: "none"
+            progress_source: "none",
+            acpx_record_id: nil,
+            stream_bytes_read: 0
           })
 
         %{
@@ -960,11 +1041,27 @@ defmodule SymphonyElixir.Orchestrator do
   defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
 
   defp complete_issue(%State{} = state, issue_id) do
+    completed =
+      state.completed
+      |> MapSet.put(issue_id)
+      |> maybe_trim_completed()
+
     %{
       state
-      | completed: MapSet.put(state.completed, issue_id),
+      | completed: completed,
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
+  end
+
+  defp maybe_trim_completed(completed) do
+    if MapSet.size(completed) > @max_completed_set_size do
+      completed
+      |> MapSet.to_list()
+      |> Enum.take(-div(@max_completed_set_size, 2))
+      |> MapSet.new()
+    else
+      completed
+    end
   end
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
@@ -1210,6 +1307,30 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | blocked: Map.delete(state.blocked, issue_id)}
   end
 
+  defp expire_blocked_entries(%State{blocked: blocked} = state) do
+    now = DateTime.utc_now()
+
+    expired_ids =
+      blocked
+      |> Enum.filter(fn {_issue_id, entry} ->
+        case Map.get(entry, :blocked_at) do
+          %DateTime{} = blocked_at ->
+            DateTime.diff(now, blocked_at, :second) > @blocked_ttl_seconds
+
+          _ ->
+            false
+        end
+      end)
+      |> Enum.map(fn {issue_id, _entry} -> issue_id end)
+
+    if expired_ids == [] do
+      state
+    else
+      Logger.info("Expiring #{length(expired_ids)} blocked entries past TTL")
+      %{state | blocked: Map.drop(blocked, expired_ids)}
+    end
+  end
+
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
     if metadata[:delay_type] == :continuation and attempt == 1 do
       continuation_retry_delay_ms()
@@ -1346,6 +1467,22 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
+  defp handle_review_down(ref, reason, reviews, state) do
+    review_entry =
+      Enum.find_value(reviews, fn {issue_id, entry} ->
+        if entry[:ref] == ref, do: {issue_id, entry}
+      end)
+
+    case review_entry do
+      {issue_id, _entry} ->
+        Logger.warning("Review task for issue_id=#{issue_id} crashed: #{inspect(reason)}")
+        {:noreply, %{state | reviews: Map.delete(reviews, issue_id)}}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
   defp running_entry_session_id(%{session_id: session_id}) when is_binary(session_id),
     do: session_id
 
@@ -1431,7 +1568,9 @@ defmodule SymphonyElixir.Orchestrator do
           last_workspace_activity_at: Map.get(metadata, :last_workspace_activity_at),
           last_workspace_activity_scan_at: Map.get(metadata, :last_workspace_activity_scan_at),
           last_process_seen_at: Map.get(metadata, :last_process_seen_at),
+          acpx_record_id: Map.get(metadata, :acpx_record_id),
           pid: Map.get(metadata, :pid),
+          consecutive_parser_errors: Map.get(metadata, :consecutive_parser_errors, 0),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1492,6 +1631,10 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  defp integrate_agent_update(running_entry, %{event: :acpx_record_id, acpx_record_id: acpx_record_id}) do
+    {Map.put(running_entry, :acpx_record_id, acpx_record_id), %{}}
   end
 
   defp integrate_agent_update(running_entry, %{event: event, timestamp: timestamp} = update) do
@@ -1564,7 +1707,11 @@ defmodule SymphonyElixir.Orchestrator do
       Map.get(running_entry, :last_raw_event_at) != nil ->
         case Map.get(running_entry, :consecutive_parser_errors, 0) > @max_consecutive_parser_errors do
           true -> "parser_error"
-          false -> "raw_event"
+          false ->
+            case Map.get(running_entry, :progress_source) do
+              "acpx_session_stream" -> "acpx_session_stream"
+              _ -> "raw_event"
+            end
         end
       Map.get(running_entry, :last_workspace_activity_at) != nil -> "workspace_activity"
       Map.get(running_entry, :last_process_seen_at) != nil -> "process_alive"
@@ -1584,7 +1731,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     updated_source =
       cond do
-        current_source in ["parser_error", "stalled_no_events"] ->
+        current_source in ["parser_error", "stalled_no_events", "acpx_session_stream"] ->
           current_source
 
         last_raw != nil ->
@@ -1633,13 +1780,23 @@ defmodule SymphonyElixir.Orchestrator do
 
           identifier = Map.get(running_entry, :identifier)
           workspace_path = Map.get(running_entry, :workspace_path)
+          agent_pid = Map.get(running_entry, :pid)
+          ref = Map.get(running_entry, :ref)
+
+          if is_pid(agent_pid) do
+            terminate_task(agent_pid)
+          end
+
+          if is_reference(ref) do
+            Process.demonitor(ref, [:flush])
+          end
 
           blocked_entry = %{
             identifier: identifier,
             workspace_path: workspace_path,
             reason: "workspace_boundary_violation",
             dirty_files: [],
-            last_error: "agent attempted to access forbidden path: #{forbidden_path}",
+            last_error: "agent attempted to access forbidden path",
             blocked_at: DateTime.utc_now()
           }
 
@@ -2237,18 +2394,21 @@ defp apply_token_delta(agent_totals, token_delta) do
 
           me = self()
 
-          Task.start(fn ->
-            review_result =
-              try do
-                Runner.run(issue, workspace_path, config)
-              rescue
-                e -> {:error, {:runner_exception, e}}
-              end
+          {:ok, review_pid} =
+            Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+              review_result =
+                try do
+                  Runner.run(issue, workspace_path, config)
+                rescue
+                  e -> {:error, {:runner_exception, e}}
+                end
 
-            send(me, {:review_completed, issue, review_result})
-          end)
+              send(me, {:review_completed, issue, review_result})
+            end)
 
-          %{state | reviews: Map.put(state.reviews, issue.id, %{started_at: DateTime.utc_now()})}
+          review_ref = Process.monitor(review_pid)
+
+          %{state | reviews: Map.put(state.reviews, issue.id, %{started_at: DateTime.utc_now(), pid: review_pid, ref: review_ref})}
         end
     end
   end

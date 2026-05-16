@@ -91,8 +91,9 @@ defmodule SymphonyElixir.AgentRunner do
           send_phase_update(update_recipient, issue, "ensuring_session", session_name)
 
           case AcpxSession.sessions_ensure(session_pid, session_name, workspace) do
-            {:ok, _session_id} ->
+            {:ok, session_id} ->
               send_phase_update(update_recipient, issue, "session_ready", session_name)
+              send_acpx_record_id(update_recipient, issue, session_id)
 
               try do
                 do_run_acpx_turns(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, 1, max_turns)
@@ -133,6 +134,23 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp send_phase_update(_recipient, _issue, _phase, _session_name), do: :ok
+
+  defp send_acpx_record_id(recipient, %Issue{id: issue_id}, acpx_record_id)
+       when is_binary(issue_id) and is_pid(recipient) and is_binary(acpx_record_id) do
+    send(
+      recipient,
+      {:agent_worker_update, issue_id,
+       %{
+         event: :acpx_record_id,
+         acpx_record_id: acpx_record_id,
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    :ok
+  end
+
+  defp send_acpx_record_id(_recipient, _issue, _acpx_record_id), do: :ok
 
   defp do_run_acpx_turns(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     do_run_turns(:prompt, session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns)

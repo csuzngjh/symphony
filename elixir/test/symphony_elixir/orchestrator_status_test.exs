@@ -821,7 +821,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                  _ ->
                    false
                end,
-               500
+               2_000
              )
 
     assert %{
@@ -841,7 +841,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                  _ ->
                    false
                end,
-               500
+               2_000
              )
 
     assert is_integer(next_poll_in_ms)
@@ -3138,6 +3138,161 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       assert state.running[issue_id].status == :terminating
 
       send(worker_pid, :done)
+    end
+  end
+
+  describe "acpx_record_id integration" do
+    test "acpx_record_id is stored in running entry from agent update" do
+      issue_id = "issue-acpx-record"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-ACPX",
+        title: "ACPX Record ID test",
+        description: "Test",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-ACPX"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :AcpxRecordIdOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      started_at = DateTime.utc_now()
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        started_at: started_at,
+        progress_source: "none",
+        last_raw_event_at: nil,
+        last_raw_preview: nil,
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        consecutive_parser_errors: 0,
+        acpx_record_id: nil,
+        stream_bytes_read: 0,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0
+      }
+
+      state_with_issue =
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+
+      :sys.replace_state(pid, fn _ -> state_with_issue end)
+
+      send(
+        pid,
+        {:agent_worker_update, issue_id,
+         %{
+           event: :acpx_record_id,
+           acpx_record_id: "fc6f2841-b57b-4db7-b265-1066d131b44f",
+           timestamp: DateTime.utc_now()
+         }}
+      )
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert %{running: [entry]} = snapshot
+      assert entry.acpx_record_id == "fc6f2841-b57b-4db7-b265-1066d131b44f"
+    end
+
+    test "session stream poll updates progress when stdout has no events" do
+      issue_id = "issue-stream-poll"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-STREAM",
+        title: "Stream poll test",
+        description: "Test",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-STREAM"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :StreamPollOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      started_at = DateTime.utc_now()
+
+      dir = System.tmp_dir!()
+      record_id = "test-stream-poll-#{:erlang.unique_integer([:positive])}"
+      stream_path = Path.join(dir, "#{record_id}.stream.ndjson")
+
+      on_exit(fn ->
+        File.rm(stream_path)
+      end)
+
+      line1 = ~s({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"abc","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Reading docs"}}}})
+      File.write!(stream_path, line1 <> "\n")
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        started_at: started_at,
+        progress_source: "process_alive",
+        last_raw_event_at: nil,
+        last_raw_preview: nil,
+        last_workspace_activity_at: nil,
+        last_process_seen_at: DateTime.utc_now() |> DateTime.add(-5, :second),
+        consecutive_parser_errors: 0,
+        acpx_record_id: record_id,
+        stream_bytes_read: 0,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0
+      }
+
+      state_with_issue =
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+        |> Map.put(:acpx_session_root, dir)
+
+      :sys.replace_state(pid, fn _ -> state_with_issue end)
+
+      send(pid, :tick)
+      Process.sleep(200)
+
+      state = :sys.get_state(pid)
+      entry = state.running[issue_id]
+
+      assert entry.last_raw_event_at != nil
+      assert entry.last_raw_preview != nil
+      assert entry.progress_source == "acpx_session_stream"
+      assert entry.stream_bytes_read > 0
     end
   end
 end

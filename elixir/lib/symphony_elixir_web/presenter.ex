@@ -95,10 +95,14 @@ defmodule SymphonyElixirWeb.Presenter do
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
 
-  defp issue_status(_running, nil, nil), do: "running"
-  defp issue_status(nil, _retry, nil), do: "retrying"
+  defp issue_status(nil, nil, nil), do: "unknown"
+  defp issue_status(%{}, nil, nil), do: "running"
+  defp issue_status(nil, %{}, nil), do: "retrying"
   defp issue_status(nil, nil, %{}), do: "blocked"
-  defp issue_status(_running, _retry, _blocked), do: "running"
+  defp issue_status(%{}, %{}, _), do: "running"
+  defp issue_status(%{}, _, %{}), do: "running"
+  defp issue_status(_, %{}, %{}), do: "retrying"
+  defp issue_status(_, _, _), do: "unknown"
 
   defp running_entry_payload(entry) do
     %{
@@ -112,6 +116,7 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
+      acpx_record_id: Map.get(entry, :acpx_record_id),
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_agent_event,
       last_raw_event_at: iso8601(Map.get(entry, :last_raw_event_at)),
@@ -151,10 +156,17 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
       session_id: running.session_id,
+      session_name: Map.get(running, :session_name),
+      acpx_record_id: Map.get(running, :acpx_record_id),
+      attempt_id: Map.get(running, :attempt_id),
+      attempt_status: Map.get(running, :attempt_status, :running),
+      phase: Map.get(running, :phase),
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
       started_at: iso8601(running.started_at),
       last_event: running.last_agent_event,
+      last_raw_event_at: iso8601(Map.get(running, :last_raw_event_at)),
+      last_raw_preview: Map.get(running, :last_raw_preview),
       last_message: summarize_message(running.last_agent_message),
       last_event_at: iso8601(running.last_agent_timestamp),
       progress_source: Map.get(running, :progress_source, "none"),
@@ -196,11 +208,11 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp blocked_issue_payload(blocked) do
     %{
-      reason: blocked.reason,
-      workspace_path: blocked.workspace_path,
-      dirty_files: blocked.dirty_files,
-      last_error: blocked.last_error,
-      blocked_at: iso8601(blocked.blocked_at)
+      reason: Map.get(blocked, :reason),
+      workspace_path: Map.get(blocked, :workspace_path),
+      dirty_files: Map.get(blocked, :dirty_files, []),
+      last_error: Map.get(blocked, :last_error),
+      blocked_at: iso8601(Map.get(blocked, :blocked_at))
     }
   end
 
