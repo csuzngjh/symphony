@@ -48,6 +48,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
   @port_line_bytes 1_048_576
   @turn_timeout_ms 600_000
+  @max_preview_bytes 2048
   @session_create_timeout_ms 90_000
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -314,7 +315,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
         Logger.info("Sending acpx prompt: session=#{state.session_name} turn=#{state.turn_number}")
 
-        case execute_acpx_streaming(strategy, args, state.cwd, stream_timeout_ms(state)) do
+        case execute_acpx_streaming(strategy, args, state.cwd, stream_timeout_ms(state), state.recipient, state.issue_id) do
           {:error, _} = error ->
             cleanup_prompt_tmp(tmp_path)
             error
@@ -344,7 +345,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
         tmp_path = write_prompt_tmp(prompt)
         args = build_exec_args(state.agent, tmp_path, opts, state.cwd)
 
-        case execute_acpx_streaming(strategy, args, state.cwd, stream_timeout_ms(state)) do
+        case execute_acpx_streaming(strategy, args, state.cwd, stream_timeout_ms(state), state.recipient, state.issue_id) do
           {:error, _} = error ->
             cleanup_prompt_tmp(tmp_path)
             error
@@ -488,7 +489,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     output
   end
 
-  defp execute_acpx_streaming(strategy, args, cwd, timeout_ms) do
+  defp execute_acpx_streaming(strategy, args, cwd, timeout_ms, recipient, issue_id) do
     {executable, full_args} = build_exec_command(strategy, args)
 
     port =
@@ -512,7 +513,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     end
 
     monitor_ref = Port.monitor(port)
-    events = collect_output(port, monitor_ref, [], [], timeout_ms)
+    events = collect_output(port, monitor_ref, [], [], [], timeout_ms, recipient, issue_id)
     cleanup_port(port, os_pid)
     events
   end
@@ -622,18 +623,18 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
   defp stream_timeout_ms(_state), do: @turn_timeout_ms
 
-  defp collect_output(port, monitor_ref, acc, raw_acc, timeout_ms) do
+  defp collect_output(port, monitor_ref, acc, raw_acc, _pending, timeout_ms, nil, _issue_id) do
     receive do
       {^port, {:data, {:eol, line}}} ->
         line = to_string(line)
 
         case EventParser.parse(line) do
-          {:ok, event} -> collect_output(port, monitor_ref, [event | acc], [line | raw_acc], timeout_ms)
-          {:error, _} -> collect_output(port, monitor_ref, acc, [line | raw_acc], timeout_ms)
+          {:ok, event} -> collect_output(port, monitor_ref, [event | acc], [line | raw_acc], "", timeout_ms, nil, nil)
+          {:error, reason} -> collect_output(port, monitor_ref, acc, [line | raw_acc], "", timeout_ms, nil, {:parse_error, reason})
         end
 
       {^port, {:data, {:noeol, chunk}}} ->
-        collect_output(port, monitor_ref, acc, raw_acc, to_string(chunk), timeout_ms)
+        collect_output(port, monitor_ref, acc, raw_acc, to_string(chunk), timeout_ms, nil, nil)
 
       {^port, {:exit_status, 0}} ->
         Enum.reverse(acc)
@@ -651,18 +652,21 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     end
   end
 
-  defp collect_output(port, monitor_ref, acc, raw_acc, pending, timeout_ms) do
+  defp collect_output(port, monitor_ref, acc, raw_acc, pending, timeout_ms, recipient, issue_id) do
     receive do
       {^port, {:data, {:eol, line}}} ->
         complete_line = pending <> to_string(line)
 
         case EventParser.parse(complete_line) do
-          {:ok, event} -> collect_output(port, monitor_ref, [event | acc], [complete_line | raw_acc], timeout_ms)
-          {:error, _} -> collect_output(port, monitor_ref, acc, [complete_line | raw_acc], timeout_ms)
+          {:ok, event} ->
+            collect_output(port, monitor_ref, [event | acc], [complete_line | raw_acc], "", timeout_ms, recipient, issue_id)
+          {:error, reason} ->
+            send_parser_error(recipient, issue_id, reason, complete_line)
+            collect_output(port, monitor_ref, acc, [complete_line | raw_acc], "", timeout_ms, recipient, issue_id)
         end
 
       {^port, {:data, {:noeol, chunk}}} ->
-        collect_output(port, monitor_ref, acc, raw_acc, pending <> to_string(chunk), timeout_ms)
+        collect_output(port, monitor_ref, acc, raw_acc, pending <> to_string(chunk), timeout_ms, recipient, issue_id)
 
       {^port, {:exit_status, 0}} ->
         Enum.reverse(acc)
@@ -702,45 +706,97 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     send(recipient, {:agent_worker_update, issue_id, event})
   end
 
+  defp send_parser_error(recipient, issue_id, reason, raw_line) do
+    preview = truncate_text(raw_line, 200)
+    send(recipient, {:agent_worker_update, issue_id, %{
+      event: :parser_error,
+      timestamp: DateTime.utc_now(),
+      raw_event_at: DateTime.utc_now(),
+      raw_preview: preview,
+      payload: %{parse_error: inspect(reason)}
+    }})
+  end
+
   defp adapt_acpx_event(:session_update, data) do
-    %{event: :session_started, timestamp: DateTime.utc_now(), session_id: data["sessionId"], payload: data}
+    now = DateTime.utc_now()
+    %{event: :session_started, timestamp: now, session_id: data["sessionId"], payload: data,
+      raw_event_at: now, raw_preview: build_bounded_preview(data)}
   end
 
   defp adapt_acpx_event(:agent_message_chunk, data) do
-    %{event: :agent_message, timestamp: DateTime.utc_now(), payload: data}
+    now = DateTime.utc_now()
+    %{event: :agent_message, timestamp: now, payload: data,
+      raw_event_at: now, raw_preview: build_bounded_preview(data)}
   end
 
   defp adapt_acpx_event(:agent_thought_chunk, data) do
-    %{event: :agent_thought, timestamp: DateTime.utc_now(), payload: data}
+    now = DateTime.utc_now()
+    %{event: :agent_thought, timestamp: now, payload: data,
+      raw_event_at: now, raw_preview: build_bounded_preview(data)}
   end
 
   defp adapt_acpx_event(:tool_call, data) do
-    %{event: :tool_call, timestamp: DateTime.utc_now(), payload: data}
+    now = DateTime.utc_now()
+    %{event: :tool_call, timestamp: now, payload: data,
+      raw_event_at: now, raw_preview: build_bounded_preview(data)}
   end
 
   defp adapt_acpx_event(:tool_call_update, data) do
-    %{event: :tool_call_update, timestamp: DateTime.utc_now(), payload: data}
+    now = DateTime.utc_now()
+    %{event: :tool_call_update, timestamp: now, payload: data,
+      raw_event_at: now, raw_preview: build_bounded_preview(data)}
   end
 
   defp adapt_acpx_event(:tool_result, data) do
-    %{event: :tool_result, timestamp: DateTime.utc_now(), payload: data}
+    now = DateTime.utc_now()
+    %{event: :tool_result, timestamp: now, payload: data,
+      raw_event_at: now, raw_preview: build_bounded_preview(data)}
   end
 
   defp adapt_acpx_event(:usage_update, data) do
-    %{event: :usage_update, timestamp: DateTime.utc_now(), usage: extract_usage_from_acpx(data), payload: data}
+    now = DateTime.utc_now()
+    %{event: :usage_update, timestamp: now, usage: extract_usage_from_acpx(data), payload: data,
+      raw_event_at: now, raw_preview: build_bounded_preview(data)}
   end
 
   defp adapt_acpx_event(:result, data) do
-    %{event: :turn_completed, timestamp: DateTime.utc_now(), usage: extract_usage_from_acpx(data["usage"]), payload: data}
+    now = DateTime.utc_now()
+    %{event: :turn_completed, timestamp: now, usage: extract_usage_from_acpx(data["usage"]), payload: data,
+      raw_event_at: now, raw_preview: build_bounded_preview(data)}
   end
 
   defp adapt_acpx_event(:error, data) do
-    %{event: :error, timestamp: DateTime.utc_now(), payload: data}
+    now = DateTime.utc_now()
+    %{event: :error, timestamp: now, payload: data,
+      raw_event_at: now, raw_preview: build_bounded_preview(data)}
   end
 
   defp adapt_acpx_event(_type, data) do
-    %{event: :unknown, timestamp: DateTime.utc_now(), payload: data}
+    now = DateTime.utc_now()
+    %{event: :unknown, timestamp: now, payload: data,
+      raw_event_at: now, raw_preview: build_bounded_preview(data)}
   end
+
+  defp build_bounded_preview(data) when is_map(data) do
+    text = data["content"] || data["message"] || data["update"] || data["text"] || inspect(data)
+    truncate_text(text, @max_preview_bytes)
+  end
+
+  defp build_bounded_preview(data) when is_binary(data) do
+    truncate_text(data, @max_preview_bytes)
+  end
+
+  defp build_bounded_preview(_), do: nil
+
+  defp truncate_text(text, max_bytes) when is_binary(text) do
+    if byte_size(text) <= max_bytes do
+      text
+    else
+      String.slice(text, 0, div(max_bytes, 2) - 3) <> "..."
+    end
+  end
+
+  defp truncate_text(text, max_bytes), do: truncate_text(to_string(text), max_bytes)
 
   defp extract_usage_from_acpx(nil), do: %{}
 
@@ -824,7 +880,8 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       parse_session_id_from_output: &parse_session_id_from_output/1,
       agent_subcommand: &agent_subcommand/1,
       adapt_acpx_event: &adapt_acpx_event/2,
-      extract_usage_from_acpx: &extract_usage_from_acpx/1
+      extract_usage_from_acpx: &extract_usage_from_acpx/1,
+      send_parser_error: &send_parser_error/4
     }
   end
 end
