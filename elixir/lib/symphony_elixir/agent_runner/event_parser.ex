@@ -153,8 +153,14 @@ defmodule SymphonyElixir.AgentRunner.EventParser do
       events
       |> Enum.filter(fn e -> e.type in [:agent_message_chunk, :agent_thought_chunk] end)
       |> Enum.map(fn e ->
-        get_in(e.data, ["content", "text"]) ||
-          get_in(e.data, ["update", "content", "text"]) || ""
+        cond do
+          # Nested: {"content":{"text":"..."}}  (real acpx format)
+          is_map(e.data["content"]) -> e.data["content"]["text"] || ""
+          # Direct: {"content":"..."} or {"update":{"content":"..."}}
+          is_binary(e.data["content"]) -> e.data["content"]
+          is_binary(e.data["update"]["content"]) -> e.data["update"]["content"]
+          true -> ""
+        end
       end)
       |> Enum.join("")
 

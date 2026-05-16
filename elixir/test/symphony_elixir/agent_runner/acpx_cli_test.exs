@@ -3,6 +3,25 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
 
   alias SymphonyElixir.AgentRunner.AcpxCli
 
+  setup do
+    # Ensure no ACPX_COMMAND pollution from test_helper (fake ACPX mode)
+    original = System.get_env("ACPX_COMMAND")
+    original_original = System.get_env("ACPX_COMMAND_ORIGINAL")
+    on_exit(fn ->
+      if original do
+        System.put_env("ACPX_COMMAND", original)
+      else
+        System.delete_env("ACPX_COMMAND")
+      end
+      if original_original do
+        System.put_env("ACPX_COMMAND_ORIGINAL", original_original)
+      else
+        System.delete_env("ACPX_COMMAND_ORIGINAL")
+      end
+    end)
+    :ok
+  end
+
   describe "resolve_strategy/3" do
     test "ACPX_COMMAND env var overrides everything" do
       original = System.get_env("ACPX_COMMAND")
@@ -24,6 +43,8 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
 
       try do
         Application.put_env(:symphony_elixir, :os_type, :unix)
+        System.delete_env("ACPX_COMMAND")
+        System.delete_env("ACPX_COMMAND_ORIGINAL")
 
         exe_resolver = fn
           "acpx" -> "/usr/local/bin/acpx"
