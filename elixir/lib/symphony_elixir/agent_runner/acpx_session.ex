@@ -248,11 +248,15 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       strategy ->
         opts = state.acpx_options
         args = build_sessions_ensure_args(state.agent, state.session_name, opts, state.cwd)
+        {executable, full_args} = build_exec_command(strategy, args)
 
         Logger.info("Ensuring acpx session: #{state.session_name} agent=#{state.agent}")
+        Logger.debug("acpx sessions ensure debug: executable=#{inspect(executable)} args=#{inspect(full_args)} cwd=#{inspect(state.cwd)} timeout_ms=#{@session_create_timeout_ms}")
 
         case execute_acpx(strategy, args, state.cwd, @session_create_timeout_ms) do
           {:ok, output} ->
+            Logger.debug("acpx sessions ensure success: exit_code=0 stdout_length=#{byte_size(output)} stdout_preview=#{inspect(String.slice(output, 0, 300))}")
+
             case parse_session_ensure_result(output) do
               {:ok, %{session_id: session_id, acpx_record_id: acpx_record_id}} ->
                 Logger.info("Ensured acpx session: #{state.session_name} session_id=#{session_id} acpx_record_id=#{acpx_record_id}")
@@ -263,8 +267,9 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
                 {:error, {:acpx_record_id_missing, reason}}
             end
 
-          {:error, _} = error ->
-            error
+          {:error, reason} ->
+            Logger.error("acpx sessions ensure failed: exit_status=#{inspect(reason)} executable=#{inspect(executable)} args=#{inspect(full_args)} cwd=#{inspect(state.cwd)}")
+            {:error, reason}
         end
     end
   end
@@ -659,7 +664,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
           {:ok, %{"result" => %{"acpxRecordId" => record_id}}} ->
             {:ok, %{session_id: to_string(record_id), acpx_record_id: to_string(record_id)}}
 
-          {:ok, %{"result" => %{"acpxSessionId" => session_id}}} ->
+          {:ok, %{"result" => %{"acpxSessionId" => _session_id}}} ->
             {:error, {:missing_acpx_record_id, "found acpxSessionId but no acpxRecordId"}}
 
           {:ok, _other} ->

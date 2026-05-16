@@ -561,6 +561,38 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
       assert result.acpx_record_id == "record-abc"
       assert result.session_id == "record-abc"
     end
+
+    test "parses real smoke test stdout shape (action: session_ensured)" do
+      output = ~s({"action":"session_ensured","created":true,"acpxRecordId":"750a321c-bcd6-4160-b8b1-3d457b5f4bcd","acpxSessionId":"750a321c-bcd6-4160-b8b1-3d457b5f4bcd","name":"smoke-test-plan"})
+
+      assert {:ok, result} = parse_session_ensure_result(output)
+      assert result.acpx_record_id == "750a321c-bcd6-4160-b8b1-3d457b5f4bcd"
+      assert result.session_id == "750a321c-bcd6-4160-b8b1-3d457b5f4bcd"
+    end
+
+    test "returns error for whitespace-only output" do
+      assert {:error, :missing_acpx_record_id} = parse_session_ensure_result("   \n  \n  ")
+    end
+
+    test "returns error for malformed JSON" do
+      assert {:error, {:missing_acpx_record_id, _}} = parse_session_ensure_result("{bad json")
+      # Non-JSON text returns simple :missing_acpx_record_id (no JSON to parse)
+      assert {:error, :missing_acpx_record_id} = parse_session_ensure_result("not json at all")
+      # Malformed JSON with braces returns tuple error from Jason.decode failure
+      assert {:error, {:missing_acpx_record_id, _}} = parse_session_ensure_result("{\"acpxRecordId\":}")
+    end
+
+    test "nonzero exit codes classified correctly for sessions ensure" do
+      assert {:agent_error, 1, output} = classify_exit_status(1, "agent crashed")
+      assert String.contains?(output, "agent crashed")
+
+      assert {:usage_error, 2, output} = classify_exit_status(2, "bad args")
+      assert String.contains?(output, "bad args")
+
+      assert {:timeout, 3} = classify_exit_status(3, "")
+      assert {:no_session, 4} = classify_exit_status(4, "")
+      assert {:permission_denied, 5} = classify_exit_status(5, "")
+    end
   end
 
   describe "agent_subcommand/1 (private logic)" do
