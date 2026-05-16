@@ -37,6 +37,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :acpx_session_root,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
@@ -55,7 +56,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     now_ms = System.monotonic_time(:millisecond)
     config = Config.settings!()
 
@@ -67,7 +68,8 @@ defmodule SymphonyElixir.Orchestrator do
       tick_timer_ref: nil,
       tick_token: nil,
       agent_totals: @empty_agent_totals,
-      agent_rate_limits: nil
+      agent_rate_limits: nil,
+      acpx_session_root: Keyword.get(opts, :acpx_session_root)
     }
 
     run_terminal_workspace_cleanup()
@@ -543,6 +545,8 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry = Map.get(state_acc.running, issue_id)
           state_acc = maybe_update_process_alive(state_acc, issue_id, running_entry)
           running_entry = Map.get(state_acc.running, issue_id)
+          state_acc = maybe_poll_acpx_session_stream(state_acc, issue_id, running_entry)
+          running_entry = Map.get(state_acc.running, issue_id)
           restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
         end)
     end
@@ -624,6 +628,70 @@ defmodule SymphonyElixir.Orchestrator do
       %{state | running: Map.put(state.running, issue_id, updated)}
     else
       state
+    end
+  end
+
+  defp maybe_poll_acpx_session_stream(state, issue_id, running_entry) do
+    acpx_record_id = Map.get(running_entry, :acpx_record_id)
+
+    if is_binary(acpx_record_id) do
+      current_source = Map.get(running_entry, :progress_source, "none")
+      needs_poll = current_source in ["none", "process_alive", "stalled_no_events", "workspace_activity"]
+
+      if needs_poll do
+        stream_bytes_read = Map.get(running_entry, :stream_bytes_read, 0)
+
+        progress = SymphonyElixir.AgentRunner.AcpxSessionStream.read_progress(
+          acpx_record_id,
+          bytes_offset: stream_bytes_read,
+          session_root: state.acpx_session_root
+        )
+
+        if progress.latest_event_at != nil do
+          updated =
+            running_entry
+            |> Map.put(:last_raw_event_at, progress.latest_event_at)
+            |> Map.put(:last_raw_preview, progress.latest_preview || Map.get(running_entry, :last_raw_preview))
+            |> Map.put(:last_agent_message, progress.latest_message || Map.get(running_entry, :last_agent_message))
+            |> Map.put(:progress_source, "acpx_session_stream")
+            |> Map.put(:stream_bytes_read, progress.bytes_read)
+            |> update_token_usage_from_stream(progress)
+            |> then(fn entry ->
+              if progress.parser_errors > 0 do
+                Map.update!(entry, :consecutive_parser_errors, &(&1 + progress.parser_errors))
+              else
+                Map.put(entry, :consecutive_parser_errors, 0)
+              end
+            end)
+
+          %{state | running: Map.put(state.running, issue_id, updated)}
+        else
+          if progress.stream_exists do
+            %{state | running: Map.put(state.running, issue_id, Map.put(running_entry, :stream_bytes_read, progress.bytes_read))}
+          else
+            state
+          end
+        end
+      else
+        state
+      end
+    else
+      state
+    end
+  end
+
+  defp update_token_usage_from_stream(running_entry, progress) do
+    usage = progress.token_usage
+
+    if usage.total_tokens > 0 do
+      running_entry
+      |> Map.put(:agent_input_tokens, max(Map.get(running_entry, :agent_input_tokens, 0), usage.input_tokens))
+      |> Map.put(:agent_output_tokens, max(Map.get(running_entry, :agent_output_tokens, 0), usage.output_tokens))
+      |> Map.put(:agent_total_tokens, max(Map.get(running_entry, :agent_total_tokens, 0), usage.total_tokens))
+      |> Map.put(:agent_cached_read_tokens, max(Map.get(running_entry, :agent_cached_read_tokens, 0), usage.cached_read_tokens))
+      |> Map.put(:agent_cached_write_tokens, max(Map.get(running_entry, :agent_cached_write_tokens, 0), usage.cached_write_tokens))
+    else
+      running_entry
     end
   end
 
@@ -917,7 +985,9 @@ defmodule SymphonyElixir.Orchestrator do
             last_workspace_activity_at: nil,
             last_workspace_activity_scan_at: nil,
             last_process_seen_at: nil,
-            progress_source: "none"
+            progress_source: "none",
+            acpx_record_id: nil,
+            stream_bytes_read: 0
           })
 
         %{
@@ -1431,6 +1501,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_workspace_activity_at: Map.get(metadata, :last_workspace_activity_at),
           last_workspace_activity_scan_at: Map.get(metadata, :last_workspace_activity_scan_at),
           last_process_seen_at: Map.get(metadata, :last_process_seen_at),
+          acpx_record_id: Map.get(metadata, :acpx_record_id),
           pid: Map.get(metadata, :pid),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
@@ -1492,6 +1563,10 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  defp integrate_agent_update(running_entry, %{event: :acpx_record_id, acpx_record_id: acpx_record_id}) do
+    {Map.put(running_entry, :acpx_record_id, acpx_record_id), %{}}
   end
 
   defp integrate_agent_update(running_entry, %{event: event, timestamp: timestamp} = update) do
@@ -1564,7 +1639,11 @@ defmodule SymphonyElixir.Orchestrator do
       Map.get(running_entry, :last_raw_event_at) != nil ->
         case Map.get(running_entry, :consecutive_parser_errors, 0) > @max_consecutive_parser_errors do
           true -> "parser_error"
-          false -> "raw_event"
+          false ->
+            case Map.get(running_entry, :progress_source) do
+              "acpx_session_stream" -> "acpx_session_stream"
+              _ -> "raw_event"
+            end
         end
       Map.get(running_entry, :last_workspace_activity_at) != nil -> "workspace_activity"
       Map.get(running_entry, :last_process_seen_at) != nil -> "process_alive"
@@ -1584,7 +1663,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     updated_source =
       cond do
-        current_source in ["parser_error", "stalled_no_events"] ->
+        current_source in ["parser_error", "stalled_no_events", "acpx_session_stream"] ->
           current_source
 
         last_raw != nil ->
