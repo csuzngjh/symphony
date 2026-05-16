@@ -247,9 +247,12 @@ defmodule SymphonyElixir.Orchestrator do
           state
           |> apply_agent_token_delta(token_delta)
           |> apply_agent_rate_limits(update)
+          |> then(&%{&1 | running: Map.put(&1.running, issue_id, updated_running_entry)})
+
+        state = maybe_block_on_boundary_violation(state, issue_id, updated_running_entry, update)
 
         notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+        {:noreply, state}
     end
   end
 
@@ -1552,6 +1555,92 @@ defmodule SymphonyElixir.Orchestrator do
       Map.get(running_entry, :last_process_seen_at) != nil -> "process_alive"
       true -> "none"
     end
+  end
+
+  defp maybe_block_on_boundary_violation(state, issue_id, running_entry, update) do
+    event = Map.get(update, :event)
+
+    if event in [:agent_message, :tool_call, :tool_result] do
+      text = extract_event_text(update)
+
+      case detect_boundary_violation(text, state) do
+        {:violation, forbidden_path} ->
+          Logger.warning("Workspace boundary violation detected for issue_id=#{issue_id}: agent referenced forbidden path #{forbidden_path}")
+
+          identifier = Map.get(running_entry, :identifier)
+          workspace_path = Map.get(running_entry, :workspace_path)
+
+          blocked_entry = %{
+            identifier: identifier,
+            workspace_path: workspace_path,
+            reason: "workspace_boundary_violation",
+            dirty_files: [],
+            last_error: "agent attempted to access forbidden path: #{forbidden_path}",
+            blocked_at: DateTime.utc_now()
+          }
+
+          running = Map.delete(state.running, issue_id)
+          %{state | running: running, blocked: Map.put(state.blocked, issue_id, blocked_entry)}
+
+        :ok ->
+          state
+      end
+    else
+      state
+    end
+  end
+
+  defp extract_event_text(%{payload: payload}) when is_map(payload) do
+    content = payload["content"] || payload["update"] || ""
+    case content do
+      c when is_map(c) -> c["text"] || inspect(c)
+      c when is_binary(c) -> c
+      _ -> ""
+    end
+  end
+
+  defp extract_event_text(%{payload: payload}) when is_binary(payload), do: payload
+  defp extract_event_text(_), do: ""
+
+  defp detect_boundary_violation(text, state) when is_binary(text) do
+    config = Config.settings!()
+    source_checkout_path = config.workspace.source_checkout_path
+
+    if source_checkout_path != nil and source_checkout_path != "" do
+      forbidden = normalize_path_for_comparison(source_checkout_path)
+
+      cd_patterns = [
+        ~r/cd\s+#{Regex.escape(source_checkout_path)}/i,
+        ~r/Set-Location\s+#{Regex.escape(source_checkout_path)}/i,
+        ~r/Push-Location\s+#{Regex.escape(source_checkout_path)}/i,
+        ~r/cd\s+["']#{Regex.escape(source_checkout_path)}["']/i
+      ]
+
+      text_lower = String.downcase(text)
+      forbidden_lower = String.downcase(forbidden)
+
+      cond do
+        Enum.any?(cd_patterns, &Regex.match?(&1, text)) ->
+          {:violation, source_checkout_path}
+
+        String.contains?(text_lower, forbidden_lower) and
+          String.contains?(text_lower, "cd ") ->
+          {:violation, source_checkout_path}
+
+        true ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp detect_boundary_violation(_text, _state), do: :ok
+
+  defp normalize_path_for_comparison(path) when is_binary(path) do
+    path
+    |> String.replace("\\", "/")
+    |> String.trim_trailing("/")
   end
 
   defp agent_session_pid_for_update(_existing, %{agent_session_pid: pid})

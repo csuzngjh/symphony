@@ -38,6 +38,17 @@ codex:
     type: workspaceWrite
 ---
 
+## Workspace Safety Contract
+
+{% if workspace_path %}
+- Worker workspace: {{ workspace_path }}
+- Only operate inside this worker workspace. All file edits, tool calls, and commands must target paths within this workspace.
+{% endif %}
+{% if source_checkout_path %}
+- Do NOT cd to {{ source_checkout_path }}. The source checkout is read-only reference, not your working directory.
+- Do NOT edit files in {{ source_checkout_path }}.
+{% endif %}
+
 You are working on a Linear ticket `{{ issue.identifier }}`
 
 {% if attempt %}
