@@ -3,28 +3,6 @@ defmodule SymphonyElixir.OrchestratorAutoReviewTest do
 
   alias SymphonyElixir.Review.Result
 
-  defmodule FakeReviewRunner do
-    @moduledoc false
-
-    def run(_issue, _workspace_path, _config, _opts \\ []) do
-      {:ok,
-       [
-         Result.success(:code_quality, 85, "Good code", "Well structured", "Code looks clean"),
-         Result.success(:security_audit, 90, "No issues", "Secure", "Safe"),
-         Result.success(:test_coverage, 70, "Adequate", "Could improve", "Tests exist"),
-         Result.success(:business_compliance, 80, "Compliant", "Meets requirements", "OK")
-       ]}
-    end
-  end
-
-  defmodule FailingReviewRunner do
-    @moduledoc false
-
-    def run(_issue, _workspace_path, _config, _opts \\ []) do
-      {:error, :acpx_connection_refused}
-    end
-  end
-
   describe "Auto Review when review.enabled=false" do
     test "blocks issue in Auto Review state instead of silently ignoring" do
       write_workflow_file!(Workflow.workflow_file_path(),
@@ -65,6 +43,51 @@ defmodule SymphonyElixir.OrchestratorAutoReviewTest do
       assert Map.has_key?(reconciled.blocked, issue_id)
       assert reconciled.blocked[issue_id].reason == "auto_review_disabled"
       assert reconciled.blocked[issue_id].identifier == "MT-AR-DISABLED"
+    end
+
+    test "does not re-block already blocked Auto Review issue on subsequent reconcile" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        tracker_kind: "memory",
+        review_enabled: false
+      )
+
+      issue_id = "issue-ar-reblock"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-AR-REBLOCK",
+        title: "Re-block test",
+        state: "Auto Review",
+        url: "https://example.org/issues/MT-AR-REBLOCK"
+      }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :ReblockOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      end)
+
+      state = :sys.get_state(pid)
+
+      first =
+        Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      assert Map.has_key?(first.blocked, issue_id)
+      original_blocked_at = first.blocked[issue_id].blocked_at
+
+      second =
+        Orchestrator.reconcile_issue_states_for_test([issue], first)
+
+      assert Map.has_key?(second.blocked, issue_id)
+      assert second.blocked[issue_id].blocked_at == original_blocked_at
     end
 
     test "does not dispatch coding agent for Auto Review issue" do
@@ -356,6 +379,57 @@ defmodule SymphonyElixir.OrchestratorAutoReviewTest do
 
       state_after = :sys.get_state(pid)
       refute Map.has_key?(state_after.reviews, issue_id)
+    end
+
+    test "on runner exception: removes from reviews map, creates failure comment, transitions to Human Review" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        tracker_kind: "memory",
+        review_enabled: true
+      )
+
+      issue_id = "issue-ar-exception"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-AR-EXCEPTION",
+        title: "Auto Review exception test",
+        state: "Auto Review",
+        url: "https://example.org/issues/MT-AR-EXCEPTION"
+      }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :ReviewExceptionOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+        Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      end)
+
+      state = :sys.get_state(pid)
+
+      review_started_at = DateTime.utc_now()
+
+      state_with_review = %{state | reviews: %{issue_id => %{started_at: review_started_at}}}
+      :sys.replace_state(pid, fn _ -> state_with_review end)
+
+      send(pid, {:review_completed, issue, {:error, {:runner_exception, %RuntimeError{message: "boom"}}}})
+      Process.sleep(100)
+
+      state_after = :sys.get_state(pid)
+      refute Map.has_key?(state_after.reviews, issue_id)
+
+      assert_received {:memory_tracker_comment, ^issue_id, comment}
+      assert comment =~ "自动评审失败"
+
+      assert_received {:memory_tracker_state_update, ^issue_id, "Human Review"}
     end
   end
 

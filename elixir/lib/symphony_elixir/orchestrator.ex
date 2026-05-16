@@ -285,15 +285,9 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  def handle_info({:review_completed, %Issue{id: issue_id} = issue, {:ok, results}}, %State{reviews: reviews} = state) do
+  def handle_info({:review_completed, %Issue{id: issue_id} = issue, result}, %State{reviews: reviews} = state) do
     state = %{state | reviews: Map.delete(reviews, issue_id)}
-    handle_review_result(issue, {:ok, results})
-    {:noreply, state}
-  end
-
-  def handle_info({:review_completed, %Issue{id: issue_id} = issue, {:error, reason}}, %State{reviews: reviews} = state) do
-    state = %{state | reviews: Map.delete(reviews, issue_id)}
-    handle_review_result(issue, {:error, reason})
+    handle_review_result(issue, result)
     {:noreply, state}
   end
 
@@ -2058,10 +2052,13 @@ defp apply_token_delta(agent_totals, token_delta) do
 
   defp auto_review_issue_state?(_state_name), do: false
 
-  defp handle_auto_review_state(%State{reviews: reviews} = state, %Issue{} = issue) do
+  defp handle_auto_review_state(%State{reviews: reviews, blocked: blocked} = state, %Issue{} = issue) do
     config = Config.settings!()
 
     cond do
+      Map.has_key?(blocked, issue.id) ->
+        state
+
       not config.review.enabled ->
         Logger.warning("Issue in Auto Review but review is disabled: #{issue_context(issue)}; blocking to prevent silent stuck")
 
@@ -2088,7 +2085,13 @@ defp apply_token_delta(agent_totals, token_delta) do
           me = self()
 
           Task.start(fn ->
-            review_result = Runner.run(issue, workspace_path, config)
+            review_result =
+              try do
+                Runner.run(issue, workspace_path, config)
+              rescue
+                e -> {:error, {:runner_exception, e}}
+              end
+
             send(me, {:review_completed, issue, review_result})
           end)
 
