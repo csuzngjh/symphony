@@ -126,8 +126,11 @@ defmodule SymphonyElixirWeb.Presenter do
       tokens: %{
         input_tokens: entry.agent_input_tokens,
         output_tokens: entry.agent_output_tokens,
-        total_tokens: entry.agent_total_tokens
-      }
+        total_tokens: entry.agent_total_tokens,
+        cached_read_tokens: Map.get(entry, :agent_cached_read_tokens, 0),
+        cached_write_tokens: Map.get(entry, :agent_cached_write_tokens, 0)
+      },
+      consecutive_parser_errors: Map.get(entry, :consecutive_parser_errors, 0)
     }
   end
 
