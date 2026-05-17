@@ -36,6 +36,64 @@ defmodule SymphonyElixir.FakeAcpxTest do
       tool_call_events = Enum.filter(result.events, fn e -> e.type == :tool_call end)
       assert length(tool_call_events) == 1
     end
+
+    test "sessions ensure returns both ACPX record and session ids" do
+      {:ok, pid} =
+        AcpxSession.start_link(name: :fake_acpx_ensure_test, agent: "claude", cwd: "/tmp")
+
+      on_exit(fn ->
+        if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5000)
+      end)
+
+      assert {:ok, %{session_id: "fake-session-001", acpx_record_id: "fake-record-001"}} =
+               AcpxSession.sessions_ensure(pid, "fake-ensure-test", "/tmp")
+    end
+  end
+
+  describe "fake ACPX scripted failure modes" do
+    test "agent_failure mode exits with a semantic agent error" do
+      System.put_env("FAKE_ACPX_MODE", "agent_failure")
+
+      on_exit(fn ->
+        System.delete_env("FAKE_ACPX_MODE")
+      end)
+
+      {:ok, pid} =
+        AcpxSession.start_link(name: :fake_acpx_agent_failure_test, agent: "claude", cwd: "/tmp")
+
+      on_exit(fn ->
+        if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5000)
+      end)
+
+      assert {:ok, %{session_id: "fake-session-001", acpx_record_id: "fake-record-001"}} =
+               AcpxSession.sessions_ensure(pid, "fake-agent-failure-test", "/tmp")
+
+      assert {:error, {:port_exit, {:agent_error, 1, _output}}} = AcpxSession.prompt(pid, "hello", [])
+    end
+
+    test "malformed_completion mode exposes parser errors without real ACPX" do
+      System.put_env("FAKE_ACPX_MODE", "malformed_completion")
+
+      on_exit(fn ->
+        System.delete_env("FAKE_ACPX_MODE")
+      end)
+
+      {:ok, pid} =
+        AcpxSession.start_link(name: :fake_acpx_malformed_test, agent: "claude", cwd: "/tmp")
+
+      on_exit(fn ->
+        if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5000)
+      end)
+
+      assert {:ok, %{session_id: "fake-session-001", acpx_record_id: "fake-record-001"}} =
+               AcpxSession.sessions_ensure(pid, "fake-malformed-test", "/tmp")
+
+      {:ok, result} = AcpxSession.prompt(pid, "hello", [])
+
+      assert result.status == "completed"
+      assert result.output =~ "Malformed completion from fake ACPX."
+      assert Enum.any?(result.events, &(&1.type == :agent_message_chunk))
+    end
   end
 
   describe "default configuration" do
