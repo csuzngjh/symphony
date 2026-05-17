@@ -1,7 +1,13 @@
 ---
+# Routing contract:
+# - PD issues live in Project P (slug: 67eb8e1d6bff) and use this PD workflow.
+# - Symphony platform issues live in Project S (slug: fc77e862278f) and use
+#   WORKFLOW.symphony-self.example.md (or a copy deployed as WORKFLOW.md).
+# - A Symphony issue must NOT be dispatched by the PD workflow.
+# - A PD issue must NOT be dispatched by the Symphony self workflow.
 tracker:
   kind: linear
-  # project_slug: "d4fdb8223f27"  # 不设置 = 轮询整个团队下的所有项目
+  project_slug: "67eb8e1d6bff"
   active_states:
     - Todo
     - In Progress

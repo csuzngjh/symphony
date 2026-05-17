@@ -102,20 +102,58 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    assert Map.get(tracker, "project_slug") == "67eb8e1d6bff"
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
-    assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
-    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/csuzngjh/principles ."
 
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())
     assert Config.workflow_prompt() == prompt
+  end
+
+  @symphony_self_workflow_path Path.expand("../../WORKFLOW.symphony-self.example.md", __DIR__)
+
+  test "symphony self workflow example has correct project slug and repo" do
+    assert {:ok, %{config: config}} = Workflow.load(@symphony_self_workflow_path)
+
+    tracker = Map.get(config, "tracker", %{})
+    assert Map.get(tracker, "project_slug") == "fc77e862278f"
+    assert Map.get(tracker, "required_label") == "ready-for-agent"
+
+    hooks = Map.get(config, "hooks", %{})
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/csuzngjh/symphony ."
+
+    workspace = Map.get(config, "workspace", %{})
+    assert Map.get(workspace, "root") =~ "symphony-self-workspaces"
+  end
+
+  test "pd workflow and symphony self workflow have different repo clone urls and workspace roots" do
+    original_workflow_path = Workflow.workflow_file_path()
+    on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
+    Workflow.clear_workflow_file_path()
+
+    assert {:ok, %{config: pd_config}} = Workflow.load()
+    assert {:ok, %{config: symphony_config}} = Workflow.load(@symphony_self_workflow_path)
+
+    pd_hooks = Map.get(pd_config, "hooks", %{})
+    symphony_hooks = Map.get(symphony_config, "hooks", %{})
+
+    pd_repo = Map.get(pd_hooks, "after_create", "")
+    symphony_repo = Map.get(symphony_hooks, "after_create", "")
+
+    assert pd_repo =~ "github.com/csuzngjh/principles"
+    assert symphony_repo =~ "github.com/csuzngjh/symphony"
+    refute pd_repo =~ "github.com/csuzngjh/symphony"
+    refute symphony_repo =~ "github.com/csuzngjh/principles"
+
+    pd_workspace = Map.get(pd_config, "workspace", %{})
+    symphony_workspace = Map.get(symphony_config, "workspace", %{})
+
+    assert Map.get(pd_workspace, "root") != Map.get(symphony_workspace, "root")
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do
