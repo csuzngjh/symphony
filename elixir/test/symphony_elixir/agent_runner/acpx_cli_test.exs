@@ -175,6 +175,80 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
         if original_os, do: Application.put_env(:symphony_elixir, :os_type, original_os), else: Application.delete_env(:symphony_elixir, :os_type)
       end
     end
+
+    test "npm_prefix fallback on Windows when npm not on PATH" do
+      original_os = Application.get_env(:symphony_elixir, :os_type)
+      original_appdata = System.get_env("APPDATA")
+
+      try do
+        Application.put_env(:symphony_elixir, :os_type, :windows)
+
+        exe_resolver = fn
+          "acpx" -> "C:\\Users\\test\\npm\\acpx.ps1"
+          "cmd" -> "C:\\Windows\\System32\\cmd.exe"
+          "node" -> "C:\\Program Files\\nodejs\\node.exe"
+          _ -> nil
+        end
+
+        file_resolver = fn path -> String.contains?(path, "cli.js") end
+
+        npm_resolver = fn -> {"'npm' is not recognized", 1} end
+
+        System.put_env("APPDATA", "C:\\Users\\test\\AppData\\Roaming")
+
+        assert {:node_js, "C:\\Program Files\\nodejs\\node.exe", js_path} =
+                 AcpxCli.resolve_strategy(file_resolver, exe_resolver, npm_resolver)
+        assert String.ends_with?(js_path, "cli.js")
+      after
+        if original_os, do: Application.put_env(:symphony_elixir, :os_type, original_os), else: Application.delete_env(:symphony_elixir, :os_type)
+        if original_appdata, do: System.put_env("APPDATA", original_appdata), else: System.delete_env("APPDATA")
+      end
+    end
+
+    test "full chain: npm_prefix fails then APPDATA fallback finds node_js" do
+      original_os = Application.get_env(:symphony_elixir, :os_type)
+      original_appdata = System.get_env("APPDATA")
+
+      try do
+        Application.put_env(:symphony_elixir, :os_type, :windows)
+
+        exe_resolver = fn
+          "node" -> "C:\\nodejs\\node.exe"
+          _ -> nil
+        end
+
+        file_resolver = fn
+          path -> String.ends_with?(path, "cli.js")
+        end
+
+        npm_resolver = fn -> {"error", 1} end
+
+        System.put_env("APPDATA", "C:\\Users\\test\\AppData\\Roaming")
+
+        result = AcpxCli.resolve_strategy(file_resolver, exe_resolver, npm_resolver)
+
+        assert match?({:node_js, _, _}, result)
+      after
+        if original_os, do: Application.put_env(:symphony_elixir, :os_type, original_os), else: Application.delete_env(:symphony_elixir, :os_type)
+        if original_appdata, do: System.put_env("APPDATA", original_appdata), else: System.delete_env("APPDATA")
+      end
+    end
+
+    test "npm_prefix returns APPDATA path when npm config fails on Windows" do
+      original_os = Application.get_env(:symphony_elixir, :os_type)
+      original_appdata = System.get_env("APPDATA")
+
+      try do
+        Application.put_env(:symphony_elixir, :os_type, :windows)
+        System.put_env("APPDATA", "C:\\Users\\test\\AppData\\Roaming")
+
+        {prefix, 0} = AcpxCli.npm_prefix()
+        assert prefix =~ "npm"
+      after
+        if original_os, do: Application.put_env(:symphony_elixir, :os_type, original_os), else: Application.delete_env(:symphony_elixir, :os_type)
+        if original_appdata, do: System.put_env("APPDATA", original_appdata), else: System.delete_env("APPDATA")
+      end
+    end
   end
 
   describe "strategy_label/1" do

@@ -19,6 +19,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxCli do
   1. `ACPX_COMMAND` env var (user override, any platform)
   2. Direct `acpx` executable when it is a real executable
   3. Node.js strategy: `node <acpx_js_path>` (preferred on Windows to avoid cmd.exe stdout capture issues)
+     On Windows, npm_prefix resolution falls back to `%APPDATA%\\npm` when `npm config get prefix` fails.
   4. Windows shell fallback: `cmd /S /C acpx`
   5. `ACPX_JS_PATH` env var + node (manual escape hatch)
   """
@@ -155,7 +156,14 @@ defmodule SymphonyElixir.AgentRunner.AcpxCli do
         if file_exists_resolver.(js_path), do: js_path, else: nil
 
       _ ->
-        nil
+        case fallback_npm_prefix() do
+          {prefix, 0} ->
+            js_path = Path.join([prefix, "node_modules", "acpx", "dist", "cli.js"])
+            if file_exists_resolver.(js_path), do: js_path, else: nil
+
+          _ ->
+            nil
+        end
     end
   end
 
@@ -163,10 +171,16 @@ defmodule SymphonyElixir.AgentRunner.AcpxCli do
   def npm_prefix do
     case Application.get_env(:symphony_elixir, :os_type) || :os.type() do
       :windows ->
-        System.cmd("cmd", ["/S", "/C", "npm config get prefix"], [])
+        case System.cmd("cmd", ["/S", "/C", "npm config get prefix"], []) do
+          {prefix, 0} -> {prefix, 0}
+          _ -> fallback_npm_prefix()
+        end
 
       {:win32, _} ->
-        System.cmd("cmd", ["/S", "/C", "npm config get prefix"], [])
+        case System.cmd("cmd", ["/S", "/C", "npm config get prefix"], []) do
+          {prefix, 0} -> {prefix, 0}
+          _ -> fallback_npm_prefix()
+        end
 
       _ ->
         case System.cmd("npm", ["config", "get", "prefix"], []) do

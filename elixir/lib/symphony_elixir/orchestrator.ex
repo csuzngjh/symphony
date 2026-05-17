@@ -224,16 +224,29 @@ defmodule SymphonyElixir.Orchestrator do
               })
 
             true ->
-              Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
-
               next_attempt = next_retry_attempt_from_running(running_entry)
+              error_str = "agent exited: #{inspect(reason)}"
 
-              schedule_issue_retry(state, issue_id, next_attempt, %{
-                identifier: running_entry.identifier,
-                error: "agent exited: #{inspect(reason)}",
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+              if deterministic_infra_failure?(reason) and is_integer(next_attempt) and next_attempt >= 2 do
+                Logger.warning("Deterministic infra failure for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; blocking instead of retry")
+
+                block_issue(state, issue_id, %{
+                  identifier: running_entry.identifier,
+                  workspace_path: Map.get(running_entry, :workspace_path),
+                  reason: infra_failure_block_reason(reason),
+                  dirty_files: [],
+                  last_error: error_str
+                }, DateTime.utc_now())
+              else
+                Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+
+                schedule_issue_retry(state, issue_id, next_attempt, %{
+                  identifier: running_entry.identifier,
+                  error: error_str,
+                  worker_host: Map.get(running_entry, :worker_host),
+                  workspace_path: Map.get(running_entry, :workspace_path)
+                })
+              end
           end
 
         Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
@@ -2438,6 +2451,32 @@ defp apply_token_delta(agent_totals, token_delta) do
   end
 
   defp integer_like(_value), do: nil
+
+  defp deterministic_infra_failure?(reason) do
+    infra_failure_reason(reason) != nil
+  end
+
+  defp infra_failure_block_reason(reason) do
+    infra_failure_reason(reason) || "unknown_infra_failure"
+  end
+
+  defp infra_failure_reason({:session_ensure_failed, {:acpx_record_id_missing, _, _}}) do
+    "acpx_session_ensure_missing_record_id"
+  end
+
+  defp infra_failure_reason({:session_ensure_failed, {:acpx_record_id_missing, _}}) do
+    "acpx_session_ensure_missing_record_id"
+  end
+
+  defp infra_failure_reason({:session_ensure_failed, {:acpx_cli_resolution_failed, _}}) do
+    "acpx_cli_resolution_failed"
+  end
+
+  defp infra_failure_reason({:workspace_hook_failed, _, _, _}) do
+    "workspace_hook_failure"
+  end
+
+  defp infra_failure_reason(_), do: nil
 
   defp auto_review_issue_state?(state_name) when is_binary(state_name) do
     normalize_issue_state(state_name) == "auto review"

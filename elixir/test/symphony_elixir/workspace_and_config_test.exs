@@ -1550,4 +1550,27 @@ agent_approval_policy: nil,
       assert :ok = Tracker.add_label("issue-1", "symphony")
     end
   end
+
+  describe "hook error classification" do
+    test "hook failure with command not found is tagged as workspace_hook_failed" do
+      workspace_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-hook-error-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          hook_after_create: "nonexistent_command_xyz_123"
+        )
+
+        assert {:error, {:workspace_hook_failed, "after_create", exit_code, _output}} =
+                 Workspace.create_for_issue("MT-HOOK-ERR")
+        assert is_integer(exit_code)
+      after
+        File.rm_rf(workspace_root)
+      end
+    end
+  end
 end
