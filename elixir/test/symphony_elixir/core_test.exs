@@ -1036,15 +1036,16 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt == "no-branch"
   end
 
-  test "WORKFLOW.md template contains branch and PR flow instructions" do
+  test "WORKFLOW.md template delegates push and PR creation to Symphony" do
     workflow_path = Path.expand("WORKFLOW.md", File.cwd!())
 
     if File.exists?(workflow_path) do
       content = File.read!(workflow_path)
 
       assert content =~ "{{ branch_name }}", "WORKFLOW.md must reference {{ branch_name }} in the template"
-      assert content =~ "git push -u origin", "WORKFLOW.md must include 'git push -u origin' instruction"
-      assert content =~ "gh pr create --head", "WORKFLOW.md must include 'gh pr create --head' instruction"
+      assert content =~ "Do NOT run `git push`", "agent must not own git push"
+      assert content =~ "Do NOT run `gh pr create`", "agent must not own PR creation"
+      assert content =~ "Symphony will stage allowed files, commit, push, create the PR, and move Linear to In Review"
     else
       IO.puts(:stderr, "SKIP: WORKFLOW.md not found at #{workflow_path}")
     end

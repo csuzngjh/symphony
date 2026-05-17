@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace, WorkspaceActivity}
+  alias SymphonyElixir.ControlPlane.PrFlow
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Review.{Runner, Reporter}
 
@@ -212,16 +213,7 @@ defmodule SymphonyElixir.Orchestrator do
               end
 
             reason == :normal ->
-              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
-
-              state
-              |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{
-                identifier: running_entry.identifier,
-                delay_type: :continuation,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+              handle_normal_agent_exit(state, issue_id, running_entry, session_id)
 
             true ->
               next_attempt = next_retry_attempt_from_running(running_entry)
@@ -299,6 +291,36 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:agent_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  def handle_info({:control_plane_pr_flow_completed, issue_id, result}, state)
+      when is_binary(issue_id) do
+    {running_entry, running} = Map.pop(state.running, issue_id)
+    state = %{state | running: running}
+
+    state =
+      case {running_entry, result} do
+        {nil, _result} ->
+          state
+
+        {%{} = _entry, {:ok, pr_result}} ->
+          Logger.info("Control-plane PR flow completed for issue_id=#{issue_id} pr_url=#{pr_result.pr_url}")
+          complete_issue(state, issue_id)
+
+        {%{} = entry, {:error, {failure_phase, reason}}} ->
+          Logger.warning("Control-plane PR flow failed for issue_id=#{issue_id} phase=#{failure_phase} reason=#{inspect(reason)}")
+
+          block_issue(state, issue_id, %{
+            identifier: entry.identifier,
+            workspace_path: Map.get(entry, :workspace_path),
+            reason: to_string(failure_phase),
+            dirty_files: [],
+            last_error: inspect(reason)
+          }, DateTime.utc_now())
+      end
+
+    notify_dashboard()
+    {:noreply, state}
+  end
 
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
@@ -1677,6 +1699,7 @@ defmodule SymphonyElixir.Orchestrator do
           pid: Map.get(metadata, :pid),
           consecutive_parser_errors: Map.get(metadata, :consecutive_parser_errors, 0),
           branch_name: Map.get(metadata, :branch_name),
+          pr_url: Map.get(metadata, :pr_url),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1752,6 +1775,10 @@ defmodule SymphonyElixir.Orchestrator do
     "branch_pushed",
     "pr_created",
     "linear_updated",
+    "validation_failed",
+    "push_failed",
+    "pr_create_failed",
+    "linear_update_failed",
     "failed_blocked",
     "retry_scheduled"
   ]
@@ -1817,9 +1844,94 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       target_index == current_index -> :ok
       target_index == current_index + 1 -> :ok
+      target in ["validation_failed", "push_failed", "pr_create_failed", "linear_update_failed", "failed_blocked", "retry_scheduled"] -> :ok
       true -> {:error, {:invalid_attempt_phase_transition, current, target}}
     end
   end
+
+  defp handle_normal_agent_exit(%State{} = state, issue_id, running_entry, session_id) do
+    case maybe_start_control_plane_pr_flow(issue_id, running_entry) do
+      {:started, finalizing_entry} ->
+        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; control-plane PR flow started")
+
+        %{state | running: Map.put(state.running, issue_id, finalizing_entry)}
+
+      :skip ->
+        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+        state
+        |> complete_issue(issue_id)
+        |> schedule_issue_retry(issue_id, 1, %{
+          identifier: running_entry.identifier,
+          delay_type: :continuation,
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path)
+        })
+    end
+  end
+
+  defp maybe_start_control_plane_pr_flow(issue_id, running_entry) do
+    workspace_path = Map.get(running_entry, :workspace_path)
+    branch_name = Map.get(running_entry, :branch_name)
+    issue = Map.get(running_entry, :issue)
+
+    cond do
+      not match?(%Issue{}, issue) -> :skip
+      not is_binary(workspace_path) or workspace_path == "" -> :skip
+      not is_binary(branch_name) or branch_name == "" -> :skip
+      true -> start_control_plane_pr_flow_task(issue_id, running_entry, issue, workspace_path, branch_name)
+    end
+  end
+
+  defp start_control_plane_pr_flow_task(issue_id, running_entry, issue, workspace_path, branch_name) do
+    caller = self()
+
+    finalizing_entry =
+      running_entry
+      |> apply_attempt_phase("validation_running")
+      |> Map.put(:status, :finalizing)
+
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           send(caller, {:control_plane_pr_flow_completed, issue_id, run_control_plane_pr_flow(issue, workspace_path, branch_name)})
+         end) do
+      {:ok, _pid} ->
+        {:started, finalizing_entry}
+
+      {:error, reason} ->
+        send(caller, {:control_plane_pr_flow_completed, issue_id, {:error, {:validation_failed, {:task_start_failed, reason}}}})
+
+        {:started,
+         finalizing_entry
+         |> apply_attempt_phase("validation_failed", reason: inspect(reason))
+         |> Map.put(:failure_reason, inspect(reason))}
+    end
+  end
+
+  defp run_control_plane_pr_flow(issue, workspace_path, branch_name) do
+    opts =
+      [
+        branch_name: branch_name,
+        command_runner: Application.get_env(:symphony_elixir, :pr_flow_command_runner, &System.cmd/3),
+        tracker_update: Application.get_env(:symphony_elixir, :pr_flow_tracker_update, &Tracker.update_issue_state/2)
+      ]
+
+    case PrFlow.run(issue, workspace_path, opts) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, {pr_flow_failure_phase(reason), reason}}
+    end
+  end
+
+  defp pr_flow_failure_phase(:no_changes), do: :validation_failed
+  defp pr_flow_failure_phase({:forbidden_changed_file, _path}), do: :validation_failed
+  defp pr_flow_failure_phase({:git_status_failed, _status, _output}), do: :validation_failed
+  defp pr_flow_failure_phase({:git_status_exception, _message}), do: :validation_failed
+  defp pr_flow_failure_phase({:git_add_failed, _status, _output}), do: :validation_failed
+  defp pr_flow_failure_phase({:git_commit_failed, _status, _output}), do: :validation_failed
+  defp pr_flow_failure_phase({:git_rev_parse_failed, _status, _output}), do: :validation_failed
+  defp pr_flow_failure_phase({:git_push_failed, _status, _output}), do: :push_failed
+  defp pr_flow_failure_phase({:gh_pr_create_failed, _status, _output}), do: :pr_create_failed
+  defp pr_flow_failure_phase({:gh_pr_create_missing_url, _output}), do: :pr_create_failed
+  defp pr_flow_failure_phase(_reason), do: :linear_update_failed
 
   defp append_phase_history(history, _target, _now, _reason, false), do: history || []
 
@@ -1859,6 +1971,16 @@ defmodule SymphonyElixir.Orchestrator do
       running_entry
       |> apply_attempt_phase("branch_prepared")
       |> Map.put(:branch_name, branch_name)
+
+    {entry, %{}}
+  end
+
+  defp integrate_agent_update(running_entry, %{event: :phase_update, phase: "pr_created", pr_url: pr_url} = update)
+       when is_binary(pr_url) do
+    entry =
+      running_entry
+      |> apply_attempt_phase("pr_created", transitioned_at: Map.get(update, :timestamp))
+      |> Map.put(:pr_url, pr_url)
 
     {entry, %{}}
   end

@@ -226,6 +226,46 @@ defmodule SymphonyElixir.AgentRunnerTest do
     end
   end
 
+  describe "workspace_has_changes?/1" do
+    test "returns true when git workspace has uncommitted agent changes" do
+      dir = Path.join(System.tmp_dir!(), "test_agent_changes_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+
+      try do
+        System.cmd("git", ["init"], cd: dir)
+        System.cmd("git", ["config", "user.email", "test@test.com"], cd: dir)
+        System.cmd("git", ["config", "user.name", "Test"], cd: dir)
+        File.write!(Path.join(dir, "test.txt"), "hello\n")
+        System.cmd("git", ["add", "."], cd: dir)
+        System.cmd("git", ["commit", "-m", "initial"], cd: dir)
+
+        File.write!(Path.join(dir, "test.txt"), "changed\n")
+
+        assert AgentRunner.workspace_has_changes?(dir) == true
+      after
+        File.rm_rf(dir)
+      end
+    end
+
+    test "returns false when git workspace is clean" do
+      dir = Path.join(System.tmp_dir!(), "test_agent_clean_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+
+      try do
+        System.cmd("git", ["init"], cd: dir)
+        System.cmd("git", ["config", "user.email", "test@test.com"], cd: dir)
+        System.cmd("git", ["config", "user.name", "Test"], cd: dir)
+        File.write!(Path.join(dir, "test.txt"), "hello\n")
+        System.cmd("git", ["add", "."], cd: dir)
+        System.cmd("git", ["commit", "-m", "initial"], cd: dir)
+
+        assert AgentRunner.workspace_has_changes?(dir) == false
+      after
+        File.rm_rf(dir)
+      end
+    end
+  end
+
   describe "pr_quality_gate/1" do
     test "returns :ok when workspace is clean" do
       # 创建一个临时 git 仓库
