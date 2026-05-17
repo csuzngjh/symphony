@@ -117,8 +117,33 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(:run_poll_cycle, state) do
+    me = self()
     state = refresh_runtime_config(state)
-    state = maybe_dispatch(state)
+    poll_token = make_ref()
+
+    # Offload slow I/O (Linear fetch, workspace scan, git check) to a Task
+    # so the GenServer mailbox remains responsive for snapshot/status calls.
+    Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+      poll_result =
+        try do
+          do_poll_cycle(state, me)
+        catch
+          kind, reason ->
+            Logger.error("Poll cycle failed with #{kind}: #{inspect(reason)}")
+            state
+        end
+
+      send(me, {:poll_cycle_completed, poll_token, poll_result})
+    end)
+
+    state = %{state | poll_check_in_progress: true}
+    notify_dashboard()
+    {:noreply, state}
+  end
+
+  # Synchronous reconcile for testing - runs reconcile_stalled_running_issues and completes poll cycle
+  def handle_info({:poll_cycle_completed, _poll_token, poll_result}, state) do
+    state = apply_poll_result(state, poll_result)
     state = schedule_tick(state, state.poll_interval_ms)
     state = %{state | poll_check_in_progress: false}
 
@@ -311,13 +336,23 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
-  defp maybe_dispatch(%State{} = state) do
-    state = reconcile_running_issues(state)
+  defp do_poll_cycle(%State{} = state, orchestrator_pid) do
+    # Validate config first - fail fast if missing required settings
+    with :ok <- Config.validate!() do
+      state = reconcile_running_issues(state)
 
-    with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
-         true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
+      if available_slots(state) > 0 do
+        case Tracker.fetch_candidate_issues() do
+          {:ok, issues} ->
+            choose_issues(issues, state, orchestrator_pid)
+
+          {:error, reason} ->
+            Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+            state
+        end
+      else
+        state
+      end
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -325,12 +360,10 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
-
         state
 
       {:error, {:unsupported_tracker_kind, kind}} ->
         Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
-
         state
 
       {:error, {:invalid_workflow_config, message}} ->
@@ -341,21 +374,25 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
         state
 
-      {:error, :workflow_front_matter_not_a_map} ->
-        Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
-        state
-
       {:error, {:workflow_parse_error, reason}} ->
         Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
         state
-
-      {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
-
-      false ->
-        state
     end
+  end
+
+  defp apply_poll_result(state, %State{} = new_state) do
+    %{state |
+      running: new_state.running,
+      claimed: new_state.claimed,
+      retry_attempts: new_state.retry_attempts,
+      blocked: new_state.blocked,
+      agent_totals: new_state.agent_totals,
+      reviews: new_state.reviews
+    }
+  end
+
+  defp apply_poll_result(state, _result) do
+    state
   end
 
   defp reconcile_running_issues(%State{} = state) do
@@ -768,7 +805,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminate_task(_pid), do: :ok
 
-  defp choose_issues(issues, state) do
+  defp choose_issues(issues, state, orchestrator_pid) do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
 
@@ -776,7 +813,7 @@ defmodule SymphonyElixir.Orchestrator do
     |> sort_issues_for_dispatch()
     |> Enum.reduce(state, fn issue, state_acc ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
-        dispatch_issue(state_acc, issue)
+        dispatch_issue(state_acc, issue, nil, nil, orchestrator_pid)
       else
         state_acc
       end
@@ -919,10 +956,10 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, orchestrator_pid) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, orchestrator_pid)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -939,8 +976,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
-    recipient = self()
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, orchestrator_pid) do
+    recipient = orchestrator_pid || self()
 
     case select_worker_host(state, preferred_worker_host) do
       :no_worker_capacity ->
@@ -1254,7 +1291,7 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
        dispatch_slots_available?(issue, state) and
        worker_slots_available?(state, worker_host) do
-      {:noreply, dispatch_issue(state, issue, attempt, worker_host)}
+      {:noreply, dispatch_issue(state, issue, attempt, worker_host, nil)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -1529,6 +1566,14 @@ defmodule SymphonyElixir.Orchestrator do
     else
       :unavailable
     end
+  end
+
+  # Synchronous reconcile for testing - runs reconcile_stalled_running_issues and completes poll cycle
+  def handle_call(:run_reconcile, _from, state) do
+    new_state = reconcile_stalled_running_issues(state)
+    new_state = schedule_tick(new_state, new_state.poll_interval_ms)
+    new_state = %{new_state | poll_check_in_progress: false}
+    {:reply, :ok, new_state}
   end
 
   @impl true
