@@ -6,8 +6,10 @@
 // Emits JSON-RPC 2.0 messages matching acpx --format=json streaming output.
 //
 // Modes (FAKE_ACPX_MODE env var):
-//   success          Emit structured result and exit 0  (default)
-//   fail             Exit with code 1 immediately
+//   success              Emit structured result and exit 0  (default)
+//   agent_failure        Exit with code 1 immediately
+//   malformed_completion Emit malformed completion output and exit 0
+//   fail                 Alias for agent_failure
 //   hang             Sleep 3600s then exit 0 (simulates stall)
 //   write_then_hang  Emit partial output then sleep (simulates partial-read stall)
 //
@@ -16,8 +18,9 @@
 // "sessions new" → sessions, "exec" → exec — only "hang"/"fail" match).
 
 const envMode = process.env.FAKE_ACPX_MODE;
-const argMode = process.argv[2];
-const mode = envMode || (argMode === "hang" || argMode === "fail" || argMode === "write_then_hang" ? argMode : "success");
+const args = process.argv.slice(2);
+const argMode = args[0];
+const mode = envMode || (["hang", "fail", "agent_failure", "malformed_completion", "write_then_hang"].includes(argMode) ? argMode : "success");
 
 function jrpc(method, params) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
@@ -50,6 +53,21 @@ async function runSuccess() {
   jrpcResult(null, { status: "success", exitCode: 0, stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 } });
 }
 
+async function runSessionEnsure() {
+  process.stdout.write(JSON.stringify({
+    acpxRecordId: "fake-record-001",
+    acpxSessionId: "fake-session-001"
+  }) + "\n");
+}
+
+async function runSessionClose() {
+  process.stdout.write(JSON.stringify({
+    closed: true,
+    acpxRecordId: "fake-record-001",
+    acpxSessionId: "fake-session-001"
+  }) + "\n");
+}
+
 async function runHang() {
   const sid = "fake-session-hang";
   await sessionUpdate(sid, "session/new", {});
@@ -61,6 +79,13 @@ async function runFail() {
   process.exit(1);
 }
 
+async function runMalformedCompletion() {
+  const sid = "fake-session-malformed";
+  await sessionUpdate(sid, "session/new", {});
+  await sessionUpdate(sid, "agent_message_chunk", { content: "Malformed completion from fake ACPX." });
+  process.stdout.write("{ this is not valid json\n");
+}
+
 async function runWriteThenHang() {
   const sid = "fake-session-write-hang";
   await sessionUpdate(sid, "session/new", {});
@@ -70,9 +95,21 @@ async function runWriteThenHang() {
 }
 
 async function main() {
+  if (args.includes("sessions") && args.includes("ensure")) {
+    await runSessionEnsure();
+    return;
+  }
+
+  if (args.includes("sessions") && args.includes("close")) {
+    await runSessionClose();
+    return;
+  }
+
   switch (mode) {
     case "hang":             await runHang(); break;
     case "fail":             await runFail(); break;
+    case "agent_failure":    await runFail(); break;
+    case "malformed_completion": await runMalformedCompletion(); break;
     case "write_then_hang":  await runWriteThenHang(); break;
     default:                 await runSuccess(); break;
   }
