@@ -1425,4 +1425,129 @@ agent_approval_policy: nil,
     end
     end
   end
+
+  describe "issue ownership: required_label and dispatch_label" do
+    test "issue without required_label is not dispatched when required_label is configured" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_required_label: "ready-for-agent"
+      )
+
+      state = %Orchestrator.State{
+        max_concurrent_agents: 3,
+        running: %{},
+        claimed: MapSet.new(),
+        agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: "no-label-1",
+        identifier: "MT-2001",
+        title: "Missing required label",
+        state: "Todo",
+        labels: ["bug"]
+      }
+
+      refute Orchestrator.should_dispatch_issue_for_test(issue, state)
+    end
+
+    test "issue with required_label is dispatched when required_label is configured" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_required_label: "ready-for-agent"
+      )
+
+      state = %Orchestrator.State{
+        max_concurrent_agents: 3,
+        running: %{},
+        claimed: MapSet.new(),
+        agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: "labeled-1",
+        identifier: "MT-2002",
+        title: "Has required label",
+        state: "Todo",
+        labels: ["bug", "ready-for-agent"]
+      }
+
+      assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+    end
+
+    test "issue is dispatched when required_label is not configured" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_required_label: nil
+      )
+
+      state = %Orchestrator.State{
+        max_concurrent_agents: 3,
+        running: %{},
+        claimed: MapSet.new(),
+        agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: "no-config-1",
+        identifier: "MT-2003",
+        title: "No required label config",
+        state: "Todo",
+        labels: ["bug"]
+      }
+
+      assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+    end
+
+    test "required_label matching is case-insensitive" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_required_label: "Ready-For-Agent"
+      )
+
+      state = %Orchestrator.State{
+        max_concurrent_agents: 3,
+        running: %{},
+        claimed: MapSet.new(),
+        agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: "case-label-1",
+        identifier: "MT-2004",
+        title: "Case insensitive label",
+        state: "Todo",
+        labels: ["ready-for-agent"]
+      }
+
+      assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+    end
+
+    test "config parses required_label and dispatch_label from workflow" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_required_label: "ready-for-agent",
+        tracker_dispatch_label: "symphony"
+      )
+
+      config = Config.settings!()
+      assert config.tracker.required_label == "ready-for-agent"
+      assert config.tracker.dispatch_label == "symphony"
+    end
+
+    test "config defaults required_label and dispatch_label to nil" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_required_label: nil,
+        tracker_dispatch_label: nil
+      )
+
+      config = Config.settings!()
+      assert config.tracker.required_label == nil
+      assert config.tracker.dispatch_label == nil
+    end
+
+    test "memory tracker add_label returns :ok" do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+      assert :ok = Tracker.add_label("issue-1", "symphony")
+    end
+  end
 end

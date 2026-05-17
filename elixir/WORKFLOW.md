@@ -13,20 +13,21 @@ tracker:
     - Canceled
     - Duplicate
     - Done
+  required_label: ready-for-agent
+  dispatch_label: symphony
 polling:
   interval_ms: 5000
 workspace:
   root: D:/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/csuzngjh/principles . && cd elixir && (mise trust 2>&1 || echo mise unavailable, skipping) && (mise exec -- mix deps.get 2>&1 || echo deps.get skipped)
+    git clone --depth 1 https://github.com/csuzngjh/principles . && (pnpm install 2>&1 || npm install 2>&1 || echo install skipped)
   before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
+    echo "workspace cleanup for {{ issue.identifier }}"
 agent:
   max_concurrent_agents: 10
   max_turns: -1
-  # acpx options (optional):
-  # model: "sonnet"  # Model to use: "sonnet", "opus", "haiku", or "default"
+  model: "sonnet"
   # allowed_tools: []  # List of allowed tool names (empty = all tools)
   # prompt_retries: 0  # Retry failed prompts on transient errors
 codex:

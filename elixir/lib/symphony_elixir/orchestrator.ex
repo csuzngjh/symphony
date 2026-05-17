@@ -343,6 +343,7 @@ defmodule SymphonyElixir.Orchestrator do
       if available_slots(state) > 0 do
         case Tracker.fetch_candidate_issues() do
           {:ok, issues} ->
+            Logger.debug("[DEBUG-POLL] Fetched #{length(issues)} candidate issues: #{inspect(Enum.map(issues, & &1.identifier))}")
             choose_issues(issues, state, orchestrator_pid)
 
           {:error, reason} ->
@@ -811,7 +812,9 @@ defmodule SymphonyElixir.Orchestrator do
     issues
     |> sort_issues_for_dispatch()
     |> Enum.reduce(state, fn issue, state_acc ->
-      if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
+      dispatchable = should_dispatch_issue?(issue, state_acc, active_states, terminal_states)
+      Logger.debug("[DEBUG-DISPATCH] Issue #{issue.identifier} dispatchable=#{dispatchable} state=#{issue.state} labels=#{inspect(issue.labels)} blocked=#{Map.has_key?(state_acc.blocked, issue.id)} claimed=#{MapSet.member?(state_acc.claimed, issue.id)}")
+      if dispatchable do
         dispatch_issue(state_acc, issue, nil, nil, orchestrator_pid)
       else
         state_acc
@@ -848,6 +851,7 @@ defmodule SymphonyElixir.Orchestrator do
     candidate_issue?(issue, active_states, terminal_states) and
       !auto_review_issue_state?(issue.state) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+      required_label_passed?(issue) and
       !Map.has_key?(blocked, issue.id) and
       !MapSet.member?(claimed, issue.id) and
       !issue_has_active_or_terminating_attempt?(running, issue.id) and
@@ -857,6 +861,39 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp required_label_passed?(%Issue{labels: labels}) do
+    case Config.settings!().tracker.required_label do
+      nil -> true
+      required_label -> Enum.any?(labels, &String.downcase(&1) == String.downcase(required_label))
+    end
+  end
+
+  defp maybe_apply_dispatch_label(%Issue{id: issue_id}) do
+    case Config.settings!().tracker.dispatch_label do
+      nil -> :ok
+      dispatch_label ->
+        case Tracker.add_label(issue_id, dispatch_label) do
+          :ok -> :ok
+          {:error, reason} ->
+            Logger.warning("Failed to add dispatch label to #{issue_id}: #{inspect(reason)}")
+            :ok
+        end
+    end
+  end
+
+  defp maybe_post_dispatch_comment(%Issue{id: issue_id}) do
+    case Config.settings!().tracker.dispatch_label do
+      nil -> :ok
+      _dispatch_label ->
+        case Tracker.create_comment(issue_id, "🤖 Symphony has started working on this issue.") do
+          :ok -> :ok
+          {:error, reason} ->
+            Logger.warning("Failed to post dispatch comment to #{issue_id}: #{inspect(reason)}")
+            :ok
+        end
+    end
+  end
 
   defp issue_has_active_or_terminating_attempt?(running, issue_id) do
     case Map.get(running, issue_id) do
@@ -996,6 +1033,9 @@ defmodule SymphonyElixir.Orchestrator do
         ref = Process.monitor(pid)
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+
+        maybe_apply_dispatch_label(issue)
+        maybe_post_dispatch_comment(issue)
 
         running =
           Map.put(state.running, issue.id, %{

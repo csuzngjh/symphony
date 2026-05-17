@@ -54,7 +54,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
       end
     end
 
-    test "Windows with .ps1 shim falls back to shell acpx command" do
+    test "Windows with .ps1 shim prefers node_js over shell" do
       original_os = Application.get_env(:symphony_elixir, :os_type)
 
       try do
@@ -69,6 +69,29 @@ defmodule SymphonyElixir.AgentRunner.AcpxCliTest do
 
         file_resolver = fn path -> String.contains?(path, "cli.js") end
         npm_resolver = fn -> {"C:\\Users\\test\\npm", 0} end
+
+        assert {:node_js, "C:\\Program Files\\nodejs\\node.exe", js_path} =
+                 AcpxCli.resolve_strategy(file_resolver, exe_resolver, npm_resolver)
+        assert String.ends_with?(js_path, "cli.js")
+      after
+        if original_os, do: Application.put_env(:symphony_elixir, :os_type, original_os), else: Application.delete_env(:symphony_elixir, :os_type)
+      end
+    end
+
+    test "Windows with .ps1 shim falls back to shell when node_js unavailable" do
+      original_os = Application.get_env(:symphony_elixir, :os_type)
+
+      try do
+        Application.put_env(:symphony_elixir, :os_type, :windows)
+
+        exe_resolver = fn
+          "acpx" -> "C:\\Users\\test\\npm\\acpx.ps1"
+          "cmd" -> "C:\\Windows\\System32\\cmd.exe"
+          _ -> nil
+        end
+
+        file_resolver = fn _ -> false end
+        npm_resolver = fn -> {"", 1} end
 
         assert {:shell, "C:\\Windows\\System32\\cmd.exe", ["/S", "/C", "acpx"]} =
                  AcpxCli.resolve_strategy(file_resolver, exe_resolver, npm_resolver)

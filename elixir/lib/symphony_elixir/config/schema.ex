@@ -53,6 +53,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:issue_identifiers, {:array, :string}, default: [])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress", "Auto Review"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      field(:required_label, :string)
+      field(:dispatch_label, :string)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -60,7 +62,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :issue_identifiers, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :assignee, :issue_identifiers, :active_states, :terminal_states, :required_label, :dispatch_label],
         empty_values: []
       )
       |> update_change(:issue_identifiers, &normalize_issue_identifiers/1)

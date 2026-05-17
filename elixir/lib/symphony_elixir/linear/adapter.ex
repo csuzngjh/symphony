@@ -37,6 +37,48 @@ defmodule SymphonyElixir.Linear.Adapter do
   }
   """
 
+  @label_lookup_query """
+  query SymphonyResolveLabelId($teamId: String!, $labelName: String!) {
+    team(id: $teamId) {
+      labels(filter: {name: {eq: $labelName}}, first: 1) {
+        nodes {
+          id
+        }
+      }
+    }
+  }
+  """
+
+  @team_id_lookup_query """
+  query SymphonyResolveTeamId($issueId: String!) {
+    issue(id: $issueId) {
+      team {
+        id
+      }
+    }
+  }
+  """
+
+  @add_labels_mutation """
+  mutation SymphonyAddLabels($issueId: String!, $labelIds: [String!]!) {
+    issueUpdate(id: $issueId, input: {labelIds: $labelIds}) {
+      success
+    }
+  }
+  """
+
+  @issue_labels_query """
+  query SymphonyIssueLabels($issueId: String!) {
+    issue(id: $issueId) {
+      labels {
+        nodes {
+          id
+        }
+      }
+    }
+  }
+  """
+
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues, do: client_module().fetch_candidate_issues()
 
@@ -73,6 +115,24 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
+  @spec add_label(String.t(), String.t()) :: :ok | {:error, term()}
+  def add_label(issue_id, label_name)
+      when is_binary(issue_id) and is_binary(label_name) do
+    with {:ok, team_id} <- resolve_team_id(issue_id),
+         {:ok, label_id} <- resolve_label_id(team_id, label_name),
+         {:ok, existing_label_ids} <- fetch_existing_label_ids(issue_id),
+         merged_label_ids <- Enum.uniq(existing_label_ids ++ [label_id]),
+         {:ok, response} <-
+           client_module().graphql(@add_labels_mutation, %{issueId: issue_id, labelIds: merged_label_ids}),
+         true <- get_in(response, ["data", "issueUpdate", "success"]) == true do
+      :ok
+    else
+      false -> {:error, :label_add_failed}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :label_add_failed}
+    end
+  end
+
   defp client_module do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
   end
@@ -86,6 +146,47 @@ defmodule SymphonyElixir.Linear.Adapter do
     else
       {:error, reason} -> {:error, reason}
       _ -> {:error, :state_not_found}
+    end
+  end
+
+  defp resolve_team_id(issue_id) do
+    with {:ok, response} <-
+           client_module().graphql(@team_id_lookup_query, %{issueId: issue_id}),
+         team_id when is_binary(team_id) <-
+           get_in(response, ["data", "issue", "team", "id"]) do
+      {:ok, team_id}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :team_not_found}
+    end
+  end
+
+  defp resolve_label_id(team_id, label_name) do
+    with {:ok, response} <-
+           client_module().graphql(@label_lookup_query, %{teamId: team_id, labelName: label_name}),
+         label_id when is_binary(label_id) <-
+           get_in(response, ["data", "team", "labels", "nodes", Access.at(0), "id"]) do
+      {:ok, label_id}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :label_not_found}
+    end
+  end
+
+  defp fetch_existing_label_ids(issue_id) do
+    case client_module().graphql(@issue_labels_query, %{issueId: issue_id}) do
+      {:ok, response} ->
+        label_ids =
+          response
+          |> get_in(["data", "issue", "labels", "nodes"])
+          |> Kernel.||([])
+          |> Enum.map(& &1["id"])
+          |> Enum.reject(&is_nil/1)
+
+        {:ok, label_ids}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 end
