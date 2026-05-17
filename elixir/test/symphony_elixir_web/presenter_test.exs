@@ -544,6 +544,7 @@ defmodule SymphonyElixirWeb.PresenterTest do
       issue_id = "issue-branch-name"
       identifier = "MT-BRANCH"
       started_at = DateTime.utc_now()
+      transition_at = DateTime.add(started_at, 1, :second)
 
       issue = %SymphonyElixir.Linear.Issue{
         id: issue_id,
@@ -572,7 +573,15 @@ defmodule SymphonyElixirWeb.PresenterTest do
         progress_source: "none",
         last_workspace_activity_at: nil,
         last_process_seen_at: nil,
-        branch_name: "symphony/mt-branch-branch-name-test"
+        branch_name: "symphony/mt-branch-branch-name-test",
+        phase: "branch_prepared",
+        phase_started_at: transition_at,
+        last_transition_at: transition_at,
+        phase_history: [
+          %{phase: "claimed", transitioned_at: started_at, reason: nil},
+          %{phase: "workspace_created", transitioned_at: started_at, reason: nil},
+          %{phase: "branch_prepared", transitioned_at: transition_at, reason: nil}
+        ]
       }
 
       initial_state = :sys.get_state(pid)
@@ -589,6 +598,10 @@ defmodule SymphonyElixirWeb.PresenterTest do
 
       [entry] = payload.running
       assert entry.branch_name == "symphony/mt-branch-branch-name-test"
+      assert entry.phase == "branch_prepared"
+      assert entry.phase_started_at == (DateTime.truncate(transition_at, :second) |> DateTime.to_iso8601())
+      assert entry.last_transition_at == (DateTime.truncate(transition_at, :second) |> DateTime.to_iso8601())
+      assert Enum.map(entry.phase_history, & &1.phase) == ["claimed", "workspace_created", "branch_prepared"]
     end
 
     test "branch_name is nil when not set" do

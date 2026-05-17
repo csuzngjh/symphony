@@ -113,6 +113,10 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt_id: Map.get(entry, :attempt_id),
       session_name: Map.get(entry, :session_name),
       phase: Map.get(entry, :phase),
+      phase_started_at: iso8601(Map.get(entry, :phase_started_at)),
+      last_transition_at: iso8601(Map.get(entry, :last_transition_at)),
+      phase_history: phase_history_payload(Map.get(entry, :phase_history, [])),
+      failure_reason: Map.get(entry, :failure_reason),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
@@ -162,6 +166,10 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt_id: Map.get(running, :attempt_id),
       attempt_status: Map.get(running, :attempt_status, :running),
       phase: Map.get(running, :phase),
+      phase_started_at: iso8601(Map.get(running, :phase_started_at)),
+      last_transition_at: iso8601(Map.get(running, :last_transition_at)),
+      phase_history: phase_history_payload(Map.get(running, :phase_history, [])),
+      failure_reason: Map.get(running, :failure_reason),
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
       started_at: iso8601(running.started_at),
@@ -195,6 +203,18 @@ defmodule SymphonyElixirWeb.Presenter do
       workspace_path: Map.get(retry, :workspace_path)
     }
   end
+
+  defp phase_history_payload(history) when is_list(history) do
+    Enum.map(history, fn entry ->
+      %{
+        phase: Map.get(entry, :phase),
+        transitioned_at: iso8601(Map.get(entry, :transitioned_at)),
+        reason: Map.get(entry, :reason)
+      }
+    end)
+  end
+
+  defp phase_history_payload(_history), do: []
 
   defp blocked_entry_payload(entry) do
     %{
