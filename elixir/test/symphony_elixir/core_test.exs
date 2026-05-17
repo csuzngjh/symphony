@@ -997,5 +997,56 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt == "Retry #2"
   end
 
+  test "prompt builder includes branch_name in render context" do
+    workflow_prompt = "Branch: {{ branch_name }} for {{ issue.identifier }}"
 
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+
+    issue = %Issue{
+      identifier: "PRI-168",
+      title: "Fix PR flow",
+      description: "Push with -u and create PR with --head",
+      state: "In Progress",
+      url: "https://example.org/issues/PRI-168",
+      labels: ["bug"]
+    }
+
+    prompt = PromptBuilder.build_prompt(issue, branch_name: "symphony/pri-168-test")
+
+    assert prompt =~ "Branch: symphony/pri-168-test"
+    assert prompt =~ "for PRI-168"
+  end
+
+  test "prompt builder renders nil branch_name as empty string" do
+    workflow_prompt = "{% if branch_name %}branch={{ branch_name }}{% else %}no-branch{% endif %}"
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+
+    issue = %Issue{
+      identifier: "MT-900",
+      title: "No branch",
+      description: "Test nil branch",
+      state: "Todo",
+      url: "https://example.org/issues/MT-900",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue, branch_name: nil)
+
+    assert prompt == "no-branch"
+  end
+
+  test "WORKFLOW.md template contains branch and PR flow instructions" do
+    workflow_path = Path.expand("WORKFLOW.md", File.cwd!())
+
+    if File.exists?(workflow_path) do
+      content = File.read!(workflow_path)
+
+      assert content =~ "{{ branch_name }}", "WORKFLOW.md must reference {{ branch_name }} in the template"
+      assert content =~ "git push -u origin", "WORKFLOW.md must include 'git push -u origin' instruction"
+      assert content =~ "gh pr create --head", "WORKFLOW.md must include 'gh pr create --head' instruction"
+    else
+      IO.puts(:stderr, "SKIP: WORKFLOW.md not found at #{workflow_path}")
+    end
+  end
 end

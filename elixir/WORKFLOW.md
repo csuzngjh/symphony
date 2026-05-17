@@ -50,6 +50,17 @@ codex:
 - Do NOT edit files in {{ source_checkout_path }}.
 {% endif %}
 
+## Branch and PR Flow
+
+You are working on branch `{{ branch_name }}`. Do NOT create a new branch.
+
+When your work is complete and tests pass:
+1. Stage and commit your changes with a descriptive message.
+2. Push: `git push -u origin {{ branch_name }}`
+3. Create PR: `gh pr create --head {{ branch_name }} --base main --title "<descriptive title>" --body "<description>"`
+4. Do NOT merge the PR yourself.
+5. Update the Linear issue state to In Review after PR creation.
+
 You are working on a Linear ticket `{{ issue.identifier }}`
 
 {% if attempt %}
