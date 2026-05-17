@@ -1739,7 +1739,7 @@ defmodule SymphonyElixir.Orchestrator do
     |> Map.put(:session_name, Map.get(update, :session_name) || Map.get(running_entry, :session_name))
     |> Map.put(:last_agent_timestamp, Map.get(update, :timestamp))
     |> Map.put(:last_agent_event, :session_ready)
-    |> Map.put(:progress_source, update_progress_source(Map.put(running_entry, :last_raw_event_at, Map.get(running_entry, :last_raw_event_at))))
+    |> Map.put(:progress_source, update_progress_source(running_entry))
     {entry, %{}}
   end
 
