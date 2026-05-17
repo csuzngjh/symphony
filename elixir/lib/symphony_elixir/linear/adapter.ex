@@ -120,16 +120,18 @@ defmodule SymphonyElixir.Linear.Adapter do
       when is_binary(issue_id) and is_binary(label_name) do
     with {:ok, team_id} <- resolve_team_id(issue_id),
          {:ok, label_id} <- resolve_label_id(team_id, label_name),
-         {:ok, existing_label_ids} <- fetch_existing_label_ids(issue_id),
-         merged_label_ids <- Enum.uniq(existing_label_ids ++ [label_id]),
-         {:ok, response} <-
-           client_module().graphql(@add_labels_mutation, %{issueId: issue_id, labelIds: merged_label_ids}),
-         true <- get_in(response, ["data", "issueUpdate", "success"]) == true do
-      :ok
-    else
-      false -> {:error, :label_add_failed}
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :label_add_failed}
+         {:ok, existing_label_ids} <- fetch_existing_label_ids(issue_id) do
+      if label_id in existing_label_ids do
+        :ok
+      else
+        case client_module().graphql(@add_labels_mutation, %{issueId: issue_id, labelIds: [label_id | existing_label_ids]}) do
+          {:ok, response} ->
+            if get_in(response, ["data", "issueUpdate", "success"]) == true, do: :ok, else: {:error, :label_add_failed}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      end
     end
   end
 

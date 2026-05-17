@@ -343,7 +343,7 @@ defmodule SymphonyElixir.Orchestrator do
       if available_slots(state) > 0 do
         case Tracker.fetch_candidate_issues() do
           {:ok, issues} ->
-            Logger.debug("[DEBUG-POLL] Fetched #{length(issues)} candidate issues: #{inspect(Enum.map(issues, & &1.identifier))}")
+            Logger.debug("Poll fetched #{length(issues)} candidate issues")
             choose_issues(issues, state, orchestrator_pid)
 
           {:error, reason} ->
@@ -813,7 +813,6 @@ defmodule SymphonyElixir.Orchestrator do
     |> sort_issues_for_dispatch()
     |> Enum.reduce(state, fn issue, state_acc ->
       dispatchable = should_dispatch_issue?(issue, state_acc, active_states, terminal_states)
-      Logger.debug("[DEBUG-DISPATCH] Issue #{issue.identifier} dispatchable=#{dispatchable} state=#{issue.state} labels=#{inspect(issue.labels)} blocked=#{Map.has_key?(state_acc.blocked, issue.id)} claimed=#{MapSet.member?(state_acc.claimed, issue.id)}")
       if dispatchable do
         dispatch_issue(state_acc, issue, nil, nil, orchestrator_pid)
       else
@@ -865,7 +864,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp required_label_passed?(%Issue{labels: labels}) do
     case Config.settings!().tracker.required_label do
       nil -> true
-      required_label -> Enum.any?(labels, &String.downcase(&1) == String.downcase(required_label))
+      required_label -> is_list(labels) and Enum.any?(labels, &String.downcase(&1) == String.downcase(required_label))
     end
   end
 
