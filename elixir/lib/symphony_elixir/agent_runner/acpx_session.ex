@@ -40,10 +40,12 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
           issue_id: String.t() | nil,
           session_name: String.t() | nil,
           session_id: String.t() | nil,
+          acpx_record_id: String.t() | nil,
           turn_number: non_neg_integer(),
           acpx_options: acpx_options(),
           execution_strategy: AcpxCli.execution_strategy(),
-          started_at: DateTime.t() | nil
+          started_at: DateTime.t() | nil,
+          stream_bytes_read: non_neg_integer()
         }
 
   @port_line_bytes 1_048_576
@@ -121,10 +123,12 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       issue_id: Keyword.get(opts, :issue_id),
       session_name: nil,
       session_id: nil,
+      acpx_record_id: nil,
       turn_number: 0,
       acpx_options: acpx_opts,
       execution_strategy: strategy,
-      started_at: nil
+      started_at: nil,
+      stream_bytes_read: 0
     }
 
     {:ok, state}
@@ -142,7 +146,9 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
       turn_number: state.turn_number,
       cwd: state.cwd,
       agent: state.agent,
-      acpx_strategy: AcpxCli.strategy_label(state.execution_strategy)
+      acpx_strategy: AcpxCli.strategy_label(state.execution_strategy),
+      acpx_record_id: Map.get(state, :acpx_record_id),
+      stream_bytes_read: Map.get(state, :stream_bytes_read, 0)
     }
 
     {:reply, {:ok, status}, state}
@@ -153,7 +159,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
     case do_sessions_ensure(updated_state) do
       {:ok, %{session_id: session_id, acpx_record_id: acpx_record_id}} ->
-        new_state = %{updated_state | session_id: session_id, turn_number: 0}
+        new_state = %{updated_state | session_id: session_id, acpx_record_id: acpx_record_id, turn_number: 0}
         {:reply, {:ok, %{session_id: session_id, acpx_record_id: acpx_record_id}}, new_state}
 
       {:error, _} = error ->

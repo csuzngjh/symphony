@@ -5,8 +5,7 @@ tracker:
   endpoint: "https://api.linear.app/graphql"
   project_slug: "d4fdb8223f27"
   issue_identifiers:
-    - PRI-117
-    - PRI-127
+    - PRI-157
   active_states:
     - Todo
     - In Progress

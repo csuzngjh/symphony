@@ -872,7 +872,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     end)
 
-    send(pid, :run_poll_cycle)
+    # Use synchronous reconcile for testing
+    GenServer.call(pid, :run_reconcile)
 
     snapshot =
       wait_for_snapshot(pid, fn
@@ -942,8 +943,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
-    send(pid, :tick)
-    Process.sleep(200)
+    GenServer.call(pid, :run_reconcile)
     state = :sys.get_state(pid)
 
     assert Map.has_key?(state.running, issue_id)
@@ -2006,8 +2006,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
         end)
 
-        send(pid, :tick)
-        Process.sleep(200)
+        GenServer.call(pid, :run_reconcile)
         state = :sys.get_state(pid)
 
         assert Map.has_key?(state.running, issue_id)
@@ -2076,8 +2075,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
       end)
 
-      send(pid, :tick)
-      Process.sleep(200)
+      GenServer.call(pid, :run_reconcile)
       state = :sys.get_state(pid)
 
       assert Map.has_key?(state.running, issue_id)
@@ -2609,8 +2607,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
         end)
 
-        send(pid, :tick)
-        Process.sleep(100)
+        GenServer.call(pid, :run_reconcile)
 
         state = :sys.get_state(pid)
         entry = state.running[issue_id]
@@ -2699,8 +2696,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
         end)
 
-        send(pid, :tick)
-        Process.sleep(100)
+        GenServer.call(pid, :run_reconcile)
 
         state = :sys.get_state(pid)
         entry = state.running[issue_id]
@@ -2759,8 +2755,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
       end)
 
-      send(pid, :tick)
-      Process.sleep(300)
+      GenServer.call(pid, :run_reconcile)
 
       state = :sys.get_state(pid)
       updated_entry = Map.get(state.running, issue_id)
@@ -2816,8 +2811,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
       end)
 
-      send(pid, :tick)
-      Process.sleep(300)
+      GenServer.call(pid, :run_reconcile)
 
       state = :sys.get_state(pid)
       updated_entry = Map.get(state.running, issue_id)
@@ -2876,8 +2870,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
       end)
 
-      send(pid, :tick)
-      Process.sleep(300)
+      GenServer.call(pid, :run_reconcile)
 
       state = :sys.get_state(pid)
       updated_entry = Map.get(state.running, issue_id)
@@ -2941,8 +2934,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
       end)
 
-      send(pid, :tick)
-      Process.sleep(200)
+      GenServer.call(pid, :run_reconcile)
 
       state = :sys.get_state(pid)
       entry = state.running[issue_id]
@@ -3006,8 +2998,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
       end)
 
-      send(pid, :tick)
-      Process.sleep(200)
+      GenServer.call(pid, :run_reconcile)
 
       state = :sys.get_state(pid)
       entry = state.running[issue_id]
@@ -3065,8 +3056,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
       end)
 
-      send(pid, :tick)
-      Process.sleep(200)
+      GenServer.call(pid, :run_reconcile)
 
       state = :sys.get_state(pid)
       entry = state.running[issue_id]
@@ -3129,8 +3119,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
       end)
 
-      send(pid, :tick)
-      Process.sleep(200)
+      GenServer.call(pid, :run_reconcile)
 
       state = :sys.get_state(pid)
 
@@ -3283,8 +3272,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       :sys.replace_state(pid, fn _ -> state_with_issue end)
 
-      send(pid, :tick)
-      Process.sleep(200)
+      GenServer.call(pid, :run_reconcile)
 
       state = :sys.get_state(pid)
       entry = state.running[issue_id]
