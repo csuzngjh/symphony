@@ -18,8 +18,9 @@ defmodule SymphonyElixir.AgentRunner.AcpxCli do
 
   1. `ACPX_COMMAND` env var (user override, any platform)
   2. Direct `acpx` executable when it is a real executable
-  3. Windows shell fallback: `cmd /S /C acpx`
-  4. `ACPX_JS_PATH` env var + node (manual escape hatch)
+  3. Node.js strategy: `node <acpx_js_path>` (preferred on Windows to avoid cmd.exe stdout capture issues)
+  4. Windows shell fallback: `cmd /S /C acpx`
+  5. `ACPX_JS_PATH` env var + node (manual escape hatch)
   """
 
   @non_executable_extensions ~w(.ps1 .cmd .bat)
@@ -66,8 +67,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxCli do
           if node, do: {:node_js, node, explicit}, else: {:error, "node not found for ACPX_COMMAND=.js"}
 
         ext when ext in @non_executable_extensions ->
-          resolve_shell_strategy(executable_resolver) ||
-            resolve_node_js_strategy(file_exists_resolver, executable_resolver, npm_prefix_resolver)
+          try_node_js_then_shell(file_exists_resolver, executable_resolver, npm_prefix_resolver)
 
         _ ->
           {:direct, explicit}
@@ -80,8 +80,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxCli do
   defp resolve_found_acpx(path, executable_resolver, file_exists_resolver, npm_prefix_resolver) do
     case String.downcase(Path.extname(path)) do
       ext when ext in @non_executable_extensions ->
-        resolve_shell_strategy(executable_resolver) ||
-          resolve_node_js_strategy(file_exists_resolver, executable_resolver, npm_prefix_resolver)
+        try_node_js_then_shell(file_exists_resolver, executable_resolver, npm_prefix_resolver)
 
       _ ->
         {:direct, path}
@@ -89,8 +88,20 @@ defmodule SymphonyElixir.AgentRunner.AcpxCli do
   end
 
   defp resolve_shell_or_node_strategy(file_exists_resolver, executable_resolver, npm_prefix_resolver) do
-    resolve_shell_strategy(executable_resolver) ||
-      resolve_node_js_strategy(file_exists_resolver, executable_resolver, npm_prefix_resolver)
+    try_node_js_then_shell(file_exists_resolver, executable_resolver, npm_prefix_resolver)
+  end
+
+  defp try_node_js_then_shell(file_exists_resolver, executable_resolver, npm_prefix_resolver) do
+    case resolve_node_js_strategy(file_exists_resolver, executable_resolver, npm_prefix_resolver) do
+      {:error, _} = error ->
+        case resolve_shell_strategy(executable_resolver) do
+          nil -> error
+          result -> result
+        end
+
+      result ->
+        result
+    end
   end
 
   defp resolve_shell_strategy(executable_resolver) do

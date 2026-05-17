@@ -26,6 +26,9 @@ defmodule SymphonyElixir.Linear.Client do
         assignee {
           id
         }
+        team {
+          id
+        }
         labels {
           nodes {
             name
@@ -67,6 +70,9 @@ defmodule SymphonyElixir.Linear.Client do
         branchName
         url
         assignee {
+          id
+        }
+        team {
           id
         }
         labels {
@@ -114,6 +120,9 @@ defmodule SymphonyElixir.Linear.Client do
         assignee {
           id
         }
+        team {
+          id
+        }
         labels {
           nodes {
             name
@@ -152,6 +161,9 @@ defmodule SymphonyElixir.Linear.Client do
       branchName
       url
       assignee {
+        id
+      }
+      team {
         id
       }
       labels {
@@ -641,6 +653,7 @@ defmodule SymphonyElixir.Linear.Client do
       branch_name: issue["branchName"],
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
+      team_id: get_in(issue, ["team", "id"]),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),

@@ -205,6 +205,8 @@ defmodule SymphonyElixir.TestSupport do
           tracker_assignee: nil,
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+          tracker_required_label: nil,
+          tracker_dispatch_label: nil,
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           workspace_source_checkout_path: nil,
@@ -248,6 +250,8 @@ defmodule SymphonyElixir.TestSupport do
     tracker_issue_identifiers = Keyword.get(config, :tracker_issue_identifiers)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
+    tracker_required_label = Keyword.get(config, :tracker_required_label)
+    tracker_dispatch_label = Keyword.get(config, :tracker_dispatch_label)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
     workspace_source_checkout_path = Keyword.get(config, :workspace_source_checkout_path)
@@ -293,6 +297,8 @@ defmodule SymphonyElixir.TestSupport do
         "  issue_identifiers: #{yaml_value(tracker_issue_identifiers)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
+        "  required_label: #{yaml_value(tracker_required_label)}",
+        "  dispatch_label: #{yaml_value(tracker_dispatch_label)}",
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
