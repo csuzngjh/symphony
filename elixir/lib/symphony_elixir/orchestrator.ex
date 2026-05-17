@@ -141,7 +141,6 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
-  # Synchronous reconcile for testing - runs reconcile_stalled_running_issues and completes poll cycle
   def handle_info({:poll_cycle_completed, _poll_token, poll_result}, state) do
     state = apply_poll_result(state, poll_result)
     state = schedule_tick(state, state.poll_interval_ms)
@@ -1568,7 +1567,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  # Synchronous reconcile for testing - runs reconcile_stalled_running_issues and completes poll cycle
+  @impl true
   def handle_call(:run_reconcile, _from, state) do
     new_state = reconcile_stalled_running_issues(state)
     new_state = schedule_tick(new_state, new_state.poll_interval_ms)
