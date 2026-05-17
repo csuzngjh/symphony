@@ -3531,5 +3531,56 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       send(worker_pid, :done)
     end
+
+    test "acpx_record_id_missing with diagnostic map on attempt 2+ blocks" do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+      issue_id = "issue-infra-diag-1"
+      orchestrator_name = Module.concat(__MODULE__, :InfraDiag1Orchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      ref = make_ref()
+      started_at = DateTime.utc_now()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: ref,
+        identifier: "TEST-DIAG",
+        issue: %Issue{id: issue_id, identifier: "TEST-DIAG", state: "In Progress"},
+        session_id: "sess-diag",
+        last_agent_message: nil,
+        last_agent_timestamp: started_at,
+        last_agent_event: nil,
+        started_at: started_at,
+        workspace_path: "/tmp/ws-diag",
+        retry_attempt: 1
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      diag_map = %{command: "sessions ensure", cwd: "/tmp/ws", exit_code: 0, stdout_length: 0, strategy: "shell"}
+      reason = {:session_ensure_failed, {:acpx_record_id_missing, :missing_acpx_record_id, diag_map}}
+      send(pid, {:DOWN, ref, :process, worker_pid, reason})
+      Process.sleep(100)
+      state = :sys.get_state(pid)
+
+      assert Map.has_key?(state.blocked, issue_id)
+      blocked_entry = state.blocked[issue_id]
+      assert blocked_entry.reason == "acpx_session_ensure_missing_record_id"
+
+      send(worker_pid, :done)
+    end
   end
 end

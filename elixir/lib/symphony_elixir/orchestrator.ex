@@ -2460,6 +2460,10 @@ defp apply_token_delta(agent_totals, token_delta) do
     infra_failure_reason(reason) || "unknown_infra_failure"
   end
 
+  defp infra_failure_reason({:session_ensure_failed, {:acpx_record_id_missing, _, _}}) do
+    "acpx_session_ensure_missing_record_id"
+  end
+
   defp infra_failure_reason({:session_ensure_failed, {:acpx_record_id_missing, _}}) do
     "acpx_session_ensure_missing_record_id"
   end

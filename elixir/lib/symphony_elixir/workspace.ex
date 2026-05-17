@@ -542,7 +542,7 @@ defmodule SymphonyElixir.Workspace do
 
   defp path_injection_needed?(shell_exec) do
     shell = String.downcase(shell_exec)
-    String.contains?(shell, "bash") or String.contains?(shell, "sh")
+    String.contains?(shell, "bash") or String.ends_with?(shell, "sh") or String.ends_with?(shell, "sh.exe")
   end
 
   defp build_path_prefix do
