@@ -3585,6 +3585,171 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   describe "session_ready observability" do
+    test "running attempts expose ordered lifecycle phase history" do
+      issue_id = "issue-attempt-lifecycle"
+      started_at = DateTime.utc_now()
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-LIFECYCLE",
+        title: "Attempt lifecycle test",
+        description: "Verify phase transitions",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-LIFECYCLE"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :AttemptLifecycleOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        acpx_record_id: nil,
+        phase: "claimed",
+        phase_started_at: started_at,
+        last_transition_at: started_at,
+        phase_history: [%{phase: "claimed", transitioned_at: started_at, reason: nil}],
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0,
+        branch_name: nil
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, {:worker_runtime_info, issue_id, %{worker_host: "local", workspace_path: "/tmp/ws"}})
+      send(pid, {:agent_worker_update, issue_id, %{event: :branch_prepared, branch_name: "symphony/mt-lifecycle", timestamp: DateTime.utc_now()}})
+
+      send(
+        pid,
+        {:agent_worker_update, issue_id,
+         %{
+           event: :session_ready,
+           phase: "session_ready",
+           session_id: "sess-lifecycle",
+           acpx_record_id: "rec-lifecycle",
+           session_name: "MT-LIFECYCLE",
+           timestamp: DateTime.utc_now()
+         }}
+      )
+
+      send(pid, {:agent_worker_update, issue_id, %{event: :phase_update, phase: "prompt_sent_turn_1", timestamp: DateTime.utc_now()}})
+      send(pid, {:agent_worker_update, issue_id, %{event: :agent_message, message: "working", timestamp: DateTime.utc_now()}})
+      send(pid, {:agent_worker_update, issue_id, %{event: :turn_completed, timestamp: DateTime.utc_now()}})
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert %{running: [snapshot_entry]} = snapshot
+
+      assert snapshot_entry.phase == "agent_completed"
+      assert snapshot_entry.session_id == "sess-lifecycle"
+      assert snapshot_entry.acpx_record_id == "rec-lifecycle"
+      assert snapshot_entry.branch_name == "symphony/mt-lifecycle"
+      assert Enum.map(snapshot_entry.phase_history, & &1.phase) == [
+               "claimed",
+               "workspace_created",
+               "branch_prepared",
+               "session_ready",
+               "prompt_sent",
+               "agent_running",
+               "agent_completed"
+             ]
+      assert length(snapshot_entry.phase_history) <= 10
+      assert snapshot_entry.phase_started_at != nil
+      assert snapshot_entry.last_transition_at != nil
+    end
+
+    test "illegal lifecycle jumps fail loud without mutating phase" do
+      issue_id = "issue-attempt-illegal-jump"
+      started_at = DateTime.utc_now()
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-ILLEGAL-JUMP",
+        title: "Attempt illegal jump test",
+        description: "Verify rejected phase transition",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-ILLEGAL-JUMP"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :AttemptIllegalJumpOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        acpx_record_id: nil,
+        phase: "claimed",
+        phase_started_at: started_at,
+        last_transition_at: started_at,
+        phase_history: [%{phase: "claimed", transitioned_at: started_at, reason: nil}],
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, {:agent_worker_update, issue_id, %{event: :phase_update, phase: "pr_created", timestamp: DateTime.utc_now()}})
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert %{running: [snapshot_entry]} = snapshot
+      assert snapshot_entry.phase == "claimed"
+      assert snapshot_entry.failure_reason =~ "invalid_attempt_phase_transition"
+      assert Enum.map(snapshot_entry.phase_history, & &1.phase) == ["claimed"]
+    end
+
     test "session_ready event updates session_id, acpx_record_id, and phase atomically" do
       issue_id = "issue-session-ready-atomic"
 

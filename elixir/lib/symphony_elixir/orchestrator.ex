@@ -267,6 +267,7 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry
           |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
           |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
+          |> apply_attempt_phase("workspace_created")
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -1049,8 +1050,8 @@ defmodule SymphonyElixir.Orchestrator do
         maybe_apply_dispatch_label(issue)
         maybe_post_dispatch_comment(issue)
 
-        running =
-          Map.put(state.running, issue.id, %{
+        running_entry =
+          init_attempt_phase(%{
             pid: pid,
             ref: ref,
             identifier: issue.identifier,
@@ -1088,7 +1089,10 @@ defmodule SymphonyElixir.Orchestrator do
             acpx_record_id: nil,
             stream_bytes_read: 0,
             branch_name: nil
-          })
+          }, "claimed")
+
+        running =
+          Map.put(state.running, issue.id, running_entry)
 
         %{
           state
@@ -1648,6 +1652,10 @@ defmodule SymphonyElixir.Orchestrator do
           session_name: Map.get(metadata, :session_name),
           attempt_id: Map.get(metadata, :attempt_id),
           phase: Map.get(metadata, :phase),
+          phase_started_at: Map.get(metadata, :phase_started_at),
+          last_transition_at: Map.get(metadata, :last_transition_at),
+          phase_history: Map.get(metadata, :phase_history, []),
+          failure_reason: Map.get(metadata, :failure_reason),
           last_raw_event_at: Map.get(metadata, :last_raw_event_at),
           last_raw_preview: Map.get(metadata, :last_raw_preview),
           agent_session_pid: Map.get(metadata, :agent_session_pid),
@@ -1731,15 +1739,114 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
+  @attempt_phases [
+    "claimed",
+    "workspace_created",
+    "branch_prepared",
+    "session_ready",
+    "prompt_sent",
+    "agent_running",
+    "agent_completed",
+    "validation_running",
+    "validation_passed",
+    "branch_pushed",
+    "pr_created",
+    "linear_updated",
+    "failed_blocked",
+    "retry_scheduled"
+  ]
+
+  @attempt_phase_order @attempt_phases
+                       |> Enum.with_index()
+                       |> Map.new()
+
+  @phase_history_limit 10
+
+  defp init_attempt_phase(entry, phase) do
+    now = DateTime.utc_now()
+    normalized_phase = normalize_attempt_phase(phase) || "claimed"
+
+    entry
+    |> Map.put(:phase, normalized_phase)
+    |> Map.put(:phase_started_at, now)
+    |> Map.put(:last_transition_at, now)
+    |> Map.put(:failure_reason, nil)
+    |> Map.put(:phase_history, [%{phase: normalized_phase, transitioned_at: now, reason: nil}])
+  end
+
+  defp apply_attempt_phase(entry, phase, opts \\ []) do
+    case transition_attempt_phase(entry, phase, opts) do
+      {:ok, updated_entry} ->
+        updated_entry
+
+      {:error, reason} ->
+        Logger.warning("Attempt phase transition rejected: #{inspect(reason)}")
+        Map.put(entry, :failure_reason, inspect(reason))
+    end
+  end
+
+  defp transition_attempt_phase(entry, phase, opts) do
+    with target when is_binary(target) <- normalize_attempt_phase(phase),
+         current when is_binary(current) <- normalize_attempt_phase(Map.get(entry, :phase)) || target,
+         :ok <- validate_attempt_transition(current, target) do
+      now = Keyword.get(opts, :transitioned_at) || DateTime.utc_now()
+      reason = Keyword.get(opts, :reason)
+      changed? = current != target
+
+      phase_history =
+        entry
+        |> Map.get(:phase_history, [])
+        |> append_phase_history(target, now, reason, changed?)
+
+      {:ok,
+       entry
+       |> Map.put(:phase, target)
+       |> Map.put(:phase_started_at, if(changed?, do: now, else: Map.get(entry, :phase_started_at) || now))
+       |> Map.put(:last_transition_at, now)
+       |> Map.put(:phase_history, phase_history)}
+    else
+      nil -> {:error, {:unknown_phase, phase}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_attempt_transition(current, target) do
+    current_index = Map.fetch!(@attempt_phase_order, current)
+    target_index = Map.fetch!(@attempt_phase_order, target)
+
+    cond do
+      target_index == current_index -> :ok
+      target_index == current_index + 1 -> :ok
+      true -> {:error, {:invalid_attempt_phase_transition, current, target}}
+    end
+  end
+
+  defp append_phase_history(history, _target, _now, _reason, false), do: history || []
+
+  defp append_phase_history(history, target, now, reason, true) do
+    (history ++ [%{phase: target, transitioned_at: now, reason: reason}])
+    |> Enum.take(-@phase_history_limit)
+  end
+
+  defp normalize_attempt_phase(nil), do: nil
+  defp normalize_attempt_phase("starting"), do: "claimed"
+  defp normalize_attempt_phase("starting_session"), do: nil
+  defp normalize_attempt_phase("ensuring_session"), do: nil
+  defp normalize_attempt_phase("prompt_sent_turn_" <> _), do: "prompt_sent"
+  defp normalize_attempt_phase(phase) when phase in @attempt_phases, do: phase
+  defp normalize_attempt_phase(_phase), do: nil
+
   defp integrate_agent_update(running_entry, %{event: :session_ready, session_id: session_id, acpx_record_id: acpx_record_id} = update) do
-    entry = running_entry
-    |> Map.put(:phase, Map.get(update, :phase, "session_ready"))
-    |> Map.put(:session_id, session_id)
-    |> Map.put(:acpx_record_id, acpx_record_id)
-    |> Map.put(:session_name, Map.get(update, :session_name) || Map.get(running_entry, :session_name))
-    |> Map.put(:last_agent_timestamp, Map.get(update, :timestamp))
-    |> Map.put(:last_agent_event, :session_ready)
-    |> Map.put(:progress_source, update_progress_source(running_entry))
+    entry =
+      running_entry
+      |> apply_attempt_phase(Map.get(update, :phase, "session_ready"), transitioned_at: Map.get(update, :timestamp))
+      |> Map.put(:session_id, session_id)
+      |> Map.put(:acpx_record_id, acpx_record_id)
+      |> Map.put(:session_name, Map.get(update, :session_name) || Map.get(running_entry, :session_name))
+      |> Map.put(:last_agent_timestamp, Map.get(update, :timestamp))
+      |> Map.put(:last_agent_event, :session_ready)
+      |> Map.put(:progress_source, update_progress_source(running_entry))
+
     {entry, %{}}
   end
 
@@ -1748,7 +1855,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp integrate_agent_update(running_entry, %{event: :branch_prepared, branch_name: branch_name}) do
-    {Map.put(running_entry, :branch_name, branch_name), %{}}
+    entry =
+      running_entry
+      |> apply_attempt_phase("branch_prepared")
+      |> Map.put(:branch_name, branch_name)
+
+    {entry, %{}}
   end
 
   defp integrate_agent_update(running_entry, %{event: event, timestamp: timestamp} = update) do
@@ -1767,11 +1879,7 @@ defmodule SymphonyElixir.Orchestrator do
     turn_count = Map.get(running_entry, :turn_count, 0)
     session_name = Map.get(update, :session_name) || Map.get(running_entry, :session_name)
 
-    {phase, raw_preview} =
-      case update do
-        %{phase: p} when is_binary(p) -> {p, Map.get(update, :raw_preview)}
-        _ -> {Map.get(running_entry, :phase), nil}
-      end
+    {phase, raw_preview} = {target_phase_for_agent_update(update, running_entry), Map.get(update, :raw_preview)}
 
     consecutive_parser_errors =
       case event do
@@ -1785,7 +1893,6 @@ defmodule SymphonyElixir.Orchestrator do
         last_agent_message: summarize_agent_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
         session_name: session_name,
-        phase: phase,
         last_agent_event: event,
         last_raw_event_at: Map.get(update, :raw_event_at) || Map.get(running_entry, :last_raw_event_at),
         last_raw_preview: raw_preview || Map.get(running_entry, :last_raw_preview),
@@ -1809,9 +1916,30 @@ defmodule SymphonyElixir.Orchestrator do
           consecutive_parser_errors: consecutive_parser_errors
         }))
       })
+      |> maybe_transition_attempt_phase(phase, Map.get(update, :timestamp))
 
     {merged, token_delta}
   end
+
+  defp maybe_transition_attempt_phase(entry, nil, _timestamp), do: entry
+
+  defp maybe_transition_attempt_phase(entry, phase, timestamp) do
+    apply_attempt_phase(entry, phase, transitioned_at: timestamp)
+  end
+
+  defp target_phase_for_agent_update(%{event: :phase_update, phase: phase}, _entry), do: normalize_attempt_phase(phase)
+  defp target_phase_for_agent_update(%{event: :turn_completed}, _entry), do: "agent_completed"
+
+  defp target_phase_for_agent_update(%{event: event}, entry)
+       when event in [:session_started, :agent_message, :agent_thought, :tool_call, :tool_call_update, :tool_result, :usage_update] do
+    case normalize_attempt_phase(Map.get(entry, :phase)) do
+      "prompt_sent" -> "agent_running"
+      "agent_running" -> "agent_running"
+      _ -> nil
+    end
+  end
+
+  defp target_phase_for_agent_update(_update, _entry), do: nil
 
   @max_consecutive_parser_errors 3
   @stalled_no_events_grace_seconds 60
