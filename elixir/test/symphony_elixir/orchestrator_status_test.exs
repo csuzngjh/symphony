@@ -3283,4 +3283,253 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       assert entry.stream_bytes_read > 0
     end
   end
+
+  describe "deterministic infra failure blocking" do
+    test "acpx_record_id_missing on attempt 2+ blocks instead of retrying" do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+      issue_id = "issue-infra-block-1"
+      orchestrator_name = Module.concat(__MODULE__, :InfraBlock1Orchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      ref = make_ref()
+      started_at = DateTime.utc_now()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: ref,
+        identifier: "TEST-1",
+        issue: %Issue{id: issue_id, identifier: "TEST-1", state: "In Progress"},
+        session_id: "sess-1",
+        last_agent_message: nil,
+        last_agent_timestamp: started_at,
+        last_agent_event: nil,
+        started_at: started_at,
+        workspace_path: "/tmp/ws",
+        retry_attempt: 1
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      reason = {:session_ensure_failed, {:acpx_record_id_missing, :missing_acpx_record_id}}
+      send(pid, {:DOWN, ref, :process, worker_pid, reason})
+      Process.sleep(100)
+      state = :sys.get_state(pid)
+
+      assert Map.has_key?(state.blocked, issue_id)
+      blocked_entry = state.blocked[issue_id]
+      assert blocked_entry.reason == "acpx_session_ensure_missing_record_id"
+      assert blocked_entry.identifier == "TEST-1"
+
+      send(worker_pid, :done)
+    end
+
+    test "workspace_hook_failed on attempt 2+ blocks instead of retrying" do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+      issue_id = "issue-infra-block-2"
+      orchestrator_name = Module.concat(__MODULE__, :InfraBlock2Orchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      ref = make_ref()
+      started_at = DateTime.utc_now()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: ref,
+        identifier: "TEST-2",
+        issue: %Issue{id: issue_id, identifier: "TEST-2", state: "In Progress"},
+        session_id: "sess-2",
+        last_agent_message: nil,
+        last_agent_timestamp: started_at,
+        last_agent_event: nil,
+        started_at: started_at,
+        workspace_path: "/tmp/ws2",
+        retry_attempt: 1
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      reason = {:workspace_hook_failed, :after_create, 1, "mix: command not found"}
+      send(pid, {:DOWN, ref, :process, worker_pid, reason})
+      Process.sleep(100)
+      state = :sys.get_state(pid)
+
+      assert Map.has_key?(state.blocked, issue_id)
+      blocked_entry = state.blocked[issue_id]
+      assert blocked_entry.reason == "workspace_hook_failure"
+
+      send(worker_pid, :done)
+    end
+
+    test "acpx_record_id_missing on attempt 1 still retries" do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+      issue_id = "issue-infra-retry-1"
+      orchestrator_name = Module.concat(__MODULE__, :InfraRetry1Orchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      ref = make_ref()
+      started_at = DateTime.utc_now()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: ref,
+        identifier: "TEST-3",
+        issue: %Issue{id: issue_id, identifier: "TEST-3", state: "In Progress"},
+        session_id: "sess-3",
+        last_agent_message: nil,
+        last_agent_timestamp: started_at,
+        last_agent_event: nil,
+        started_at: started_at,
+        workspace_path: "/tmp/ws3"
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      reason = {:session_ensure_failed, {:acpx_record_id_missing, :missing_acpx_record_id}}
+      send(pid, {:DOWN, ref, :process, worker_pid, reason})
+      Process.sleep(100)
+      state = :sys.get_state(pid)
+
+      refute Map.has_key?(state.blocked, issue_id)
+      assert Map.has_key?(state.retry_attempts, issue_id)
+
+      send(worker_pid, :done)
+    end
+
+    test "non-infra agent failure retries regardless of attempt count" do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+      issue_id = "issue-infra-non-infra"
+      orchestrator_name = Module.concat(__MODULE__, :InfraNonInfraOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      ref = make_ref()
+      started_at = DateTime.utc_now()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: ref,
+        identifier: "TEST-4",
+        issue: %Issue{id: issue_id, identifier: "TEST-4", state: "In Progress"},
+        session_id: "sess-4",
+        last_agent_message: nil,
+        last_agent_timestamp: started_at,
+        last_agent_event: nil,
+        started_at: started_at,
+        workspace_path: "/tmp/ws4",
+        retry_attempt: 4
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, {:DOWN, ref, :process, worker_pid, :normal})
+      Process.sleep(100)
+      state = :sys.get_state(pid)
+
+      refute Map.has_key?(state.blocked, issue_id)
+
+      send(worker_pid, :done)
+    end
+
+    test "blocked entry contains identifier, workspace_path, and last_error" do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+      issue_id = "issue-infra-fields"
+      orchestrator_name = Module.concat(__MODULE__, :InfraFieldsOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      ref = make_ref()
+      started_at = DateTime.utc_now()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: ref,
+        identifier: "TEST-5",
+        issue: %Issue{id: issue_id, identifier: "TEST-5", state: "In Progress"},
+        session_id: "sess-5",
+        last_agent_message: nil,
+        last_agent_timestamp: started_at,
+        last_agent_event: nil,
+        started_at: started_at,
+        workspace_path: "/tmp/ws5",
+        retry_attempt: 2
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      reason = {:session_ensure_failed, {:acpx_record_id_missing, :missing_acpx_record_id}}
+      send(pid, {:DOWN, ref, :process, worker_pid, reason})
+      Process.sleep(100)
+      state = :sys.get_state(pid)
+
+      blocked_entry = state.blocked[issue_id]
+      assert blocked_entry.identifier == "TEST-5"
+      assert blocked_entry.workspace_path == "/tmp/ws5"
+      assert blocked_entry.last_error =~ "agent exited"
+
+      send(worker_pid, :done)
+    end
+  end
 end

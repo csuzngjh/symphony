@@ -270,7 +270,14 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
 
               {:error, reason} ->
                 Logger.error("Failed to parse acpx session ensure output: #{inspect(reason)} output=#{inspect(String.slice(output, 0, 500))}")
-                {:error, {:acpx_record_id_missing, reason}}
+                {:error, {:acpx_record_id_missing, reason, %{
+                  command: "sessions ensure",
+                  cwd: state.cwd,
+                  exit_code: 0,
+                  stdout_length: byte_size(output),
+                  stdout_preview: String.slice(output, 0, 256),
+                  strategy: AcpxCli.strategy_label(state.execution_strategy)
+                }}}
             end
 
           {:error, reason} ->
@@ -880,7 +887,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSession do
     end
   end
 
-  defp truncate_text(text, max_bytes), do: truncate_text(to_string(text), max_bytes)
+  defp truncate_text(text, max_bytes), do: truncate_text(inspect(text), max_bytes)
 
   defp extract_usage_from_acpx(nil), do: %{}
 

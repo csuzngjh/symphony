@@ -531,6 +531,68 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp maybe_inject_path({shell_exec, shell_args}) do
+    if path_injection_needed?(shell_exec) do
+      path_prefix = build_path_prefix()
+      {shell_exec, inject_path_into_args(shell_args, path_prefix)}
+    else
+      {shell_exec, shell_args}
+    end
+  end
+
+  defp path_injection_needed?(shell_exec) do
+    shell = String.downcase(shell_exec)
+    String.contains?(shell, "bash") or String.contains?(shell, "sh")
+  end
+
+  defp build_path_prefix do
+    extra_paths =
+      [
+        Path.join([System.user_home(), ".local", "share", "mise", "shims"]),
+        Path.join([System.user_home(), ".elixir", "install", "asdf", "installs", "elixir"])
+      ]
+      |> Enum.filter(&File.dir?/1)
+
+    extra_paths = extra_paths ++ discover_mise_elixir_paths()
+
+    extra_paths =
+      extra_paths
+      |> Enum.uniq()
+      |> Enum.map(&String.replace(&1, "\\", "/"))
+
+    case extra_paths do
+      [] -> ""
+      paths -> "export PATH=\"#{Enum.join(paths, ":")}:$PATH\" && "
+    end
+  end
+
+  defp discover_mise_elixir_paths do
+    local_appdata = System.get_env("LOCALAPPDATA") || Path.join([System.user_home(), "AppData", "Local"])
+    mise_installs = Path.join([local_appdata, "mise", "installs", "elixir"])
+
+    if File.dir?(mise_installs) do
+      case File.ls(mise_installs) do
+        {:ok, versions} ->
+          versions
+          |> Enum.map(fn v -> Path.join([mise_installs, v, "bin"]) end)
+          |> Enum.filter(&File.dir?/1)
+
+        _ ->
+          []
+      end
+    else
+      []
+    end
+  end
+
+  defp inject_path_into_args(args, ""), do: args
+
+  defp inject_path_into_args([flag, command | rest], prefix) when flag in ["-c", "/C"] do
+    [flag, prefix <> command | rest]
+  end
+
+  defp inject_path_into_args(args, _prefix), do: args
+
   defp ignore_hook_failure(:ok), do: :ok
   defp ignore_hook_failure({:error, _reason}), do: :ok
 
@@ -541,7 +603,7 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        {shell_exec, shell_args} = ShellResolution.resolve(command)
+        {shell_exec, shell_args} = ShellResolution.resolve(command) |> maybe_inject_path()
         System.cmd(shell_exec, shell_args, cd: workspace, stderr_to_stdout: true)
       end)
 

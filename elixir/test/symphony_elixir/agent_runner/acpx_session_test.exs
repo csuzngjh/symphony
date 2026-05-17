@@ -792,6 +792,28 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionTest do
 
   # Delegate to AcpxSession.__testing__() instead of copying private functions.
   # This ensures tests break if the private function signatures change.
+  describe "acpx_record_id_missing error structure" do
+    test "empty stdout returns simple missing_acpx_record_id" do
+      assert {:error, :missing_acpx_record_id} = parse_session_ensure_result("")
+    end
+
+    test "whitespace-only stdout returns simple missing_acpx_record_id" do
+      assert {:error, :missing_acpx_record_id} = parse_session_ensure_result("   \n  ")
+    end
+
+    test "non-JSON output returns simple missing_acpx_record_id" do
+      assert {:error, :missing_acpx_record_id} = parse_session_ensure_result("some log output")
+    end
+
+    test "JSON without acpxRecordId returns tuple error" do
+      assert {:error, {:missing_acpx_record_id, _msg}} = parse_session_ensure_result(~s({"status":"ok"}))
+    end
+
+    test "malformed JSON returns tuple error" do
+      assert {:error, {:missing_acpx_record_id, _msg}} = parse_session_ensure_result("{bad json")
+    end
+  end
+
   defp build_exec_command(strategy, args), do: AcpxSession.__testing__().build_exec_command.(strategy, args)
   defp build_global_args(opts), do: AcpxSession.__testing__().build_global_args.(opts, nil)
   defp build_global_args(opts, cwd), do: AcpxSession.__testing__().build_global_args.(opts, cwd)
