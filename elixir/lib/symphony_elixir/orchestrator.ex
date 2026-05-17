@@ -1086,7 +1086,8 @@ defmodule SymphonyElixir.Orchestrator do
             last_process_seen_at: nil,
             progress_source: "none",
             acpx_record_id: nil,
-            stream_bytes_read: 0
+            stream_bytes_read: 0,
+            branch_name: nil
           })
 
         %{
@@ -1667,6 +1668,7 @@ defmodule SymphonyElixir.Orchestrator do
           acpx_record_id: Map.get(metadata, :acpx_record_id),
           pid: Map.get(metadata, :pid),
           consecutive_parser_errors: Map.get(metadata, :consecutive_parser_errors, 0),
+          branch_name: Map.get(metadata, :branch_name),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1729,8 +1731,24 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
+  defp integrate_agent_update(running_entry, %{event: :session_ready, session_id: session_id, acpx_record_id: acpx_record_id} = update) do
+    entry = running_entry
+    |> Map.put(:phase, Map.get(update, :phase, "session_ready"))
+    |> Map.put(:session_id, session_id)
+    |> Map.put(:acpx_record_id, acpx_record_id)
+    |> Map.put(:session_name, Map.get(update, :session_name) || Map.get(running_entry, :session_name))
+    |> Map.put(:last_agent_timestamp, Map.get(update, :timestamp))
+    |> Map.put(:last_agent_event, :session_ready)
+    |> Map.put(:progress_source, update_progress_source(running_entry))
+    {entry, %{}}
+  end
+
   defp integrate_agent_update(running_entry, %{event: :acpx_record_id, acpx_record_id: acpx_record_id}) do
     {Map.put(running_entry, :acpx_record_id, acpx_record_id), %{}}
+  end
+
+  defp integrate_agent_update(running_entry, %{event: :branch_prepared, branch_name: branch_name}) do
+    {Map.put(running_entry, :branch_name, branch_name), %{}}
   end
 
   defp integrate_agent_update(running_entry, %{event: event, timestamp: timestamp} = update) do

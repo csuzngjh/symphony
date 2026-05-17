@@ -18,6 +18,7 @@ defmodule SymphonyElixir.PromptBuilder do
 
     workspace_path = Keyword.get(opts, :workspace_path)
     source_checkout_path = Keyword.get(opts, :source_checkout_path) || config.workspace.source_checkout_path
+    branch_name = Keyword.get(opts, :branch_name)
 
     template
     |> Solid.render!(
@@ -25,7 +26,8 @@ defmodule SymphonyElixir.PromptBuilder do
         "attempt" => Keyword.get(opts, :attempt),
         "issue" => issue |> Map.from_struct() |> to_solid_map(),
         "workspace_path" => workspace_path,
-        "source_checkout_path" => source_checkout_path
+        "source_checkout_path" => source_checkout_path,
+        "branch_name" => branch_name
       },
       @render_opts
     )

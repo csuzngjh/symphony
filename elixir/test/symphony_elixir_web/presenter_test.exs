@@ -529,4 +529,125 @@ defmodule SymphonyElixirWeb.PresenterTest do
       assert payload.running.last_progress_at != nil
     end
   end
+
+  describe "state_payload/2 branch_name in running entry" do
+    test "includes branch_name when set" do
+      orchestrator_name = Module.concat(__MODULE__, :BranchNameOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-branch-name"
+      identifier = "MT-BRANCH"
+      started_at = DateTime.utc_now()
+
+      issue = %SymphonyElixir.Linear.Issue{
+        id: issue_id,
+        identifier: identifier,
+        title: "Branch name test",
+        description: "Testing branch_name in payload",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-BRANCH"
+      }
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: identifier,
+        issue: issue,
+        session_id: "sess-branch",
+        agent_session_pid: nil,
+        turn_count: 1,
+        last_agent_message: nil,
+        last_agent_timestamp: started_at,
+        last_agent_event: "session_ready",
+        started_at: started_at,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        branch_name: "symphony/mt-branch-branch-name-test"
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      new_state =
+        initial_state
+        |> Map.put(:running, Map.put(initial_state.running, issue_id, running_entry))
+
+      :sys.replace_state(pid, fn _ -> new_state end)
+
+      payload = Presenter.state_payload(orchestrator_name, 5_000)
+
+      assert length(payload.running) == 1
+
+      [entry] = payload.running
+      assert entry.branch_name == "symphony/mt-branch-branch-name-test"
+    end
+
+    test "branch_name is nil when not set" do
+      orchestrator_name = Module.concat(__MODULE__, :NoBranchNameOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-no-branch"
+      identifier = "MT-NOBRANCH"
+      started_at = DateTime.utc_now()
+
+      issue = %SymphonyElixir.Linear.Issue{
+        id: issue_id,
+        identifier: identifier,
+        title: "No branch test",
+        description: "Testing nil branch_name",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-NOBRANCH"
+      }
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: identifier,
+        issue: issue,
+        session_id: nil,
+        agent_session_pid: nil,
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        started_at: started_at,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      new_state =
+        initial_state
+        |> Map.put(:running, Map.put(initial_state.running, issue_id, running_entry))
+
+      :sys.replace_state(pid, fn _ -> new_state end)
+
+      payload = Presenter.state_payload(orchestrator_name, 5_000)
+
+      assert length(payload.running) == 1
+
+      [entry] = payload.running
+      assert entry.branch_name == nil
+    end
+  end
 end

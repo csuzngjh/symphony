@@ -822,4 +822,112 @@ defmodule SymphonyElixir.Workspace do
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
     "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"
   end
+
+  @spec prepare_branch(String.t(), map()) :: {:ok, String.t()} | {:error, term()}
+  def prepare_branch(workspace_path, issue) when is_binary(workspace_path) do
+    branch_name = branch_name_for_issue(issue)
+
+    case dirty_files(workspace_path, nil) do
+      {:dirty, files} ->
+        {:error, {:dirty_workspace, files}}
+
+      _ ->
+        case current_branch(workspace_path) do
+          {:ok, ^branch_name} ->
+            Logger.info("Already on branch #{branch_name} for workspace=#{workspace_path}")
+            {:ok, branch_name}
+
+          {:ok, _current} ->
+            case branch_exists_locally(workspace_path, branch_name) do
+              true ->
+                checkout_branch(workspace_path, branch_name)
+
+              false ->
+                create_and_checkout_branch(workspace_path, branch_name)
+            end
+
+          {:error, reason} ->
+            {:error, {:branch_check_failed, reason}}
+        end
+    end
+  end
+
+  defp branch_name_for_issue(%{identifier: identifier} = issue) do
+    base = case identifier do
+      id when is_binary(id) and id != "" -> String.downcase(id)
+      _ -> "issue"
+    end
+
+    slug = case Map.get(issue, :title) do
+      t when is_binary(t) and t != "" ->
+        t
+        |> String.downcase()
+        |> String.replace(~r/[^a-z0-9._\/-]+/, "-")
+        |> String.replace(~r/-+/, "-")
+        |> String.trim("-")
+        |> String.slice(0, 40)
+
+      _ ->
+        nil
+    end
+
+    name = if slug && slug != "", do: "symphony/#{base}-#{slug}", else: "symphony/#{base}"
+
+    name
+    |> String.slice(0, 80)
+    |> String.trim("-")
+  end
+
+  defp branch_name_for_issue(_), do: "symphony/unknown"
+
+  defp current_branch(workspace_path) do
+    case System.cmd("git", ["rev-parse", "--abbrev-ref", "HEAD"], cd: workspace_path, stderr_to_stdout: true) do
+      {output, 0} -> {:ok, String.trim(output)}
+      {error, code} -> {:error, {:git_command_failed, code, String.trim(error)}}
+    end
+  rescue
+    e -> {:error, {:git_command_error, inspect(e)}}
+  end
+
+  defp branch_exists_locally(workspace_path, branch_name) do
+    case System.cmd("git", ["rev-parse", "--verify", branch_name], cd: workspace_path, stderr_to_stdout: true) do
+      {_output, 0} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp checkout_branch(workspace_path, branch_name) do
+    case System.cmd("git", ["checkout", branch_name], cd: workspace_path, stderr_to_stdout: true) do
+      {_output, 0} ->
+        Logger.info("Checked out existing branch #{branch_name} for workspace=#{workspace_path}")
+        {:ok, branch_name}
+
+      {error, code} ->
+        {:error, {:git_checkout_failed, code, String.trim(error)}}
+    end
+  rescue
+    e -> {:error, {:git_checkout_error, inspect(e)}}
+  end
+
+  defp create_and_checkout_branch(workspace_path, branch_name) do
+    case System.cmd("git", ["checkout", "-b", branch_name], cd: workspace_path, stderr_to_stdout: true) do
+      {_output, 0} ->
+        Logger.info("Created and checked out branch #{branch_name} for workspace=#{workspace_path}")
+        {:ok, branch_name}
+
+      {error, code} ->
+        {:error, {:git_branch_create_failed, code, String.trim(error)}}
+    end
+  rescue
+    e -> {:error, {:git_branch_create_error, inspect(e)}}
+  end
+
+  @doc false
+  def __testing__ do
+    %{
+      branch_name_for_issue: &branch_name_for_issue/1
+    }
+  end
 end

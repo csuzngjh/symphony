@@ -3583,4 +3583,369 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       send(worker_pid, :done)
     end
   end
+
+  describe "session_ready observability" do
+    test "session_ready event updates session_id, acpx_record_id, and phase atomically" do
+      issue_id = "issue-session-ready-atomic"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-SESSION-READY",
+        title: "Session ready atomic test",
+        description: "Verify atomic update",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SESSION-READY"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :SessionReadyAtomicOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      started_at = DateTime.utc_now()
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        acpx_record_id: nil,
+        phase: "ensuring_session",
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(
+        pid,
+        {:agent_worker_update, issue_id,
+         %{
+           event: :session_ready,
+           phase: "session_ready",
+           session_id: "sess-123",
+           acpx_record_id: "rec-456",
+           session_name: "issue-test",
+           timestamp: DateTime.utc_now()
+         }}
+      )
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert %{running: [snapshot_entry]} = snapshot
+      assert snapshot_entry.session_id == "sess-123"
+      assert snapshot_entry.acpx_record_id == "rec-456"
+      assert snapshot_entry.phase == "session_ready"
+    end
+
+    test "session_ready preserves existing last_raw_event_at" do
+      issue_id = "issue-session-ready-preserve"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-SESSION-PRESERVE",
+        title: "Session ready preserve test",
+        description: "Verify last_raw_event_at preserved",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SESSION-PRESERVE"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :SessionReadyPreserveOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      started_at = DateTime.utc_now()
+      existing_raw_event_at = DateTime.add(DateTime.utc_now(), -5, :second)
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        acpx_record_id: nil,
+        phase: "ensuring_session",
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: existing_raw_event_at,
+        started_at: started_at,
+        progress_source: "raw_event",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(
+        pid,
+        {:agent_worker_update, issue_id,
+         %{
+           event: :session_ready,
+           phase: "session_ready",
+           session_id: "sess-preserve",
+           acpx_record_id: "rec-preserve",
+           session_name: "issue-preserve",
+           timestamp: DateTime.utc_now()
+         }}
+      )
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert %{running: [snapshot_entry]} = snapshot
+      assert snapshot_entry.last_raw_event_at == existing_raw_event_at
+    end
+
+    test "workspace activity does not clear acpx_record_id" do
+      issue_id = "issue-ws-activity-no-clear"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-WS-NO-CLEAR",
+        title: "Workspace activity no clear test",
+        description: "Verify acpx_record_id preserved",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-WS-NO-CLEAR"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :WsActivityNoClearOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      started_at = DateTime.utc_now()
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: "sess-existing",
+        acpx_record_id: "rec-existing",
+        phase: "session_ready",
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      now = DateTime.utc_now()
+
+      send(
+        pid,
+        {:agent_worker_update, issue_id,
+         %{
+           event: :notification,
+           payload: %{method: "some-event"},
+           timestamp: now
+         }}
+      )
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert %{running: [snapshot_entry]} = snapshot
+      assert snapshot_entry.acpx_record_id == "rec-existing"
+    end
+
+    test "session_ready with nil session_id still updates acpx_record_id and phase" do
+      issue_id = "issue-session-ready-nil-session"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-SESSION-NIL",
+        title: "Session ready nil session_id test",
+        description: "Verify partial update",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SESSION-NIL"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :SessionReadyNilSessionOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      started_at = DateTime.utc_now()
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        acpx_record_id: nil,
+        phase: "ensuring_session",
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(
+        pid,
+        {:agent_worker_update, issue_id,
+         %{
+           event: :session_ready,
+           phase: "session_ready",
+           session_id: nil,
+           acpx_record_id: "rec-nil-session",
+           session_name: "issue-nil-session",
+           timestamp: DateTime.utc_now()
+         }}
+      )
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert %{running: [snapshot_entry]} = snapshot
+      assert snapshot_entry.acpx_record_id == "rec-nil-session"
+      assert snapshot_entry.phase == "session_ready"
+    end
+  end
+
+  describe "branch_prepared event" do
+    test "branch_prepared event updates branch_name in running entry" do
+      issue_id = "issue-branch-prepared"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-BRANCH",
+        title: "Branch prepared test",
+        description: "Verify branch_name update",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-BRANCH"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :BranchPreparedOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      started_at = DateTime.utc_now()
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        acpx_record_id: nil,
+        phase: "starting",
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0,
+        branch_name: nil
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(
+        pid,
+        {:agent_worker_update, issue_id,
+         %{
+           event: :branch_prepared,
+           branch_name: "symphony/pri-168-test",
+           timestamp: DateTime.utc_now()
+         }}
+      )
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert %{running: [snapshot_entry]} = snapshot
+      assert snapshot_entry.branch_name == "symphony/pri-168-test"
+    end
+  end
 end

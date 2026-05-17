@@ -35,7 +35,10 @@ defmodule SymphonyElixir.AgentRunner do
 
         try do
           with :ok <- Workspace.validate_worker_workspace(workspace),
-               :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
+               :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host),
+               {:ok, branch_name} <- Workspace.prepare_branch(workspace, issue) do
+            send_branch_info(update_recipient, issue, branch_name)
+            opts = Keyword.put(opts, :branch_name, branch_name)
             run_agent_turns(workspace, issue, update_recipient, opts, worker_host)
           end
         after
@@ -80,20 +83,19 @@ defmodule SymphonyElixir.AgentRunner do
     send_phase_update(update_recipient, issue, "starting_session", session_name)
 
     case AcpxSession.start_link(
-            agent: agent,
-            cwd: workspace,
-            recipient: update_recipient,
-            issue_id: issue.id,
-            acpx_options: acpx_options_from_config()
-          ) do
+           agent: agent,
+           cwd: workspace,
+           recipient: update_recipient,
+           issue_id: issue.id,
+           acpx_options: acpx_options_from_config()
+         ) do
       {:ok, session_pid} ->
         try do
           send_phase_update(update_recipient, issue, "ensuring_session", session_name)
 
           case AcpxSession.sessions_ensure(session_pid, session_name, workspace) do
-            {:ok, %{session_id: _session_id, acpx_record_id: acpx_record_id}} ->
-              send_phase_update(update_recipient, issue, "session_ready", session_name)
-              send_acpx_record_id(update_recipient, issue, acpx_record_id)
+            {:ok, %{session_id: session_id, acpx_record_id: acpx_record_id}} ->
+              send_session_ready(update_recipient, issue, session_id, acpx_record_id, session_name)
 
               try do
                 do_run_acpx_turns(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, 1, max_turns)
@@ -134,14 +136,17 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_phase_update(_recipient, _issue, _phase, _session_name), do: :ok
 
-  defp send_acpx_record_id(recipient, %Issue{id: issue_id}, acpx_record_id)
-       when is_binary(issue_id) and is_pid(recipient) and is_binary(acpx_record_id) do
+  defp send_session_ready(recipient, %Issue{id: issue_id}, session_id, acpx_record_id, session_name)
+       when is_binary(issue_id) and is_pid(recipient) do
     send(
       recipient,
       {:agent_worker_update, issue_id,
        %{
-         event: :acpx_record_id,
+         event: :session_ready,
+         phase: "session_ready",
+         session_id: session_id,
          acpx_record_id: acpx_record_id,
+         session_name: session_name,
          timestamp: DateTime.utc_now()
        }}
     )
@@ -149,7 +154,24 @@ defmodule SymphonyElixir.AgentRunner do
     :ok
   end
 
-  defp send_acpx_record_id(_recipient, _issue, _acpx_record_id), do: :ok
+  defp send_session_ready(_recipient, _issue, _session_id, _acpx_record_id, _session_name), do: :ok
+
+  defp send_branch_info(recipient, %Issue{id: issue_id}, branch_name)
+       when is_binary(issue_id) and is_pid(recipient) and is_binary(branch_name) do
+    send(
+      recipient,
+      {:agent_worker_update, issue_id,
+       %{
+         event: :branch_prepared,
+         branch_name: branch_name,
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    :ok
+  end
+
+  defp send_branch_info(_recipient, _issue, _branch_name), do: :ok
 
   defp do_run_acpx_turns(session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     do_run_turns(:prompt, session_pid, workspace, issue, update_recipient, opts, issue_state_fetcher, turn_number, max_turns)
@@ -284,7 +306,8 @@ defmodule SymphonyElixir.AgentRunner do
       {output, _} -> {:error, {:dirty_workspace, String.trim(output)}}
     end
   rescue
-    _ -> :ok  # Skip check if git is unavailable
+    # Skip check if git is unavailable
+    _ -> :ok
   end
 
   defp check_no_whitespace_errors(workspace) do
@@ -294,7 +317,8 @@ defmodule SymphonyElixir.AgentRunner do
       {output, _} -> {:error, {:whitespace_errors, String.trim(output)}}
     end
   rescue
-    _ -> :ok  # Skip check if git is unavailable
+    # Skip check if git is unavailable
+    _ -> :ok
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns, workspace) do
@@ -384,6 +408,8 @@ defmodule SymphonyElixir.AgentRunner do
       agent_name_from_config: &agent_name_from_config/0,
       build_turn_prompt: &build_turn_prompt/5,
       send_agent_update: &send_agent_update/3,
+      send_session_ready: &send_session_ready/5,
+      send_branch_info: &send_branch_info/3,
       send_worker_runtime_info: &send_worker_runtime_info/4,
       normalize_issue_state: &normalize_issue_state/1,
       max_turns_label: &max_turns_label/1

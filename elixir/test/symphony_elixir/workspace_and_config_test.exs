@@ -1573,4 +1573,93 @@ agent_approval_policy: nil,
       end
     end
   end
+
+  describe "branch name generation" do
+    test "generates branch name from identifier and title" do
+      result = Workspace.__testing__().branch_name_for_issue.(%{identifier: "PRI-168", title: "Fix observability"})
+      assert String.starts_with?(result, "symphony/pri-168-")
+      assert result =~ "fix-observability"
+    end
+
+    test "handles missing title" do
+      result = Workspace.__testing__().branch_name_for_issue.(%{identifier: "PRI-168"})
+      assert result == "symphony/pri-168"
+    end
+
+    test "slugifies special characters" do
+      result = Workspace.__testing__().branch_name_for_issue.(%{identifier: "PRI-200", title: "Fix: API & UI / React (v2.0)"})
+      assert Regex.match?(~r/^[a-z0-9._\/-]+$/, result)
+    end
+
+    test "truncates long branch names to 80 chars" do
+      long_title = String.duplicate("a very long title part ", 20)
+      result = Workspace.__testing__().branch_name_for_issue.(%{identifier: "PRI-300", title: long_title})
+      assert String.length(result) <= 80
+    end
+
+    test "dirty workspace fails branch prepare" do
+      if git_available?() do
+        test_root =
+          Path.join(
+            System.tmp_dir!(),
+            "symphony-elixir-branch-dirty-#{System.unique_integer([:positive])}"
+          )
+
+        try do
+          workspace_path = Path.join(test_root, "repo")
+          File.mkdir_p!(workspace_path)
+
+          System.cmd("git", ["-C", workspace_path, "init", "-b", "main"])
+          System.cmd("git", ["-C", workspace_path, "config", "user.name", "Test User"])
+          System.cmd("git", ["-C", workspace_path, "config", "user.email", "test@example.com"])
+          File.write!(Path.join(workspace_path, "file.txt"), "initial\n")
+          System.cmd("git", ["-C", workspace_path, "add", "."])
+          System.cmd("git", ["-C", workspace_path, "commit", "-m", "initial"])
+
+          File.write!(Path.join(workspace_path, "dirty.txt"), "uncommitted\n")
+
+          assert {:error, {:dirty_workspace, _files}} =
+                   Workspace.prepare_branch(workspace_path, %{identifier: "PRI-168", title: "test"})
+        after
+          File.rm_rf(test_root)
+        end
+      else
+        IO.puts(:stderr, "SKIP: git not available in PATH")
+      end
+    end
+
+    test "clean workspace creates and checks out branch" do
+      if git_available?() do
+        test_root =
+          Path.join(
+            System.tmp_dir!(),
+            "symphony-elixir-branch-clean-#{System.unique_integer([:positive])}"
+          )
+
+        try do
+          workspace_path = Path.join(test_root, "repo")
+          File.mkdir_p!(workspace_path)
+
+          System.cmd("git", ["-C", workspace_path, "init", "-b", "main"])
+          System.cmd("git", ["-C", workspace_path, "config", "user.name", "Test User"])
+          System.cmd("git", ["-C", workspace_path, "config", "user.email", "test@example.com"])
+          File.write!(Path.join(workspace_path, "file.txt"), "initial\n")
+          System.cmd("git", ["-C", workspace_path, "add", "."])
+          System.cmd("git", ["-C", workspace_path, "commit", "-m", "initial"])
+
+          assert {:ok, branch_name} =
+                   Workspace.prepare_branch(workspace_path, %{identifier: "PRI-168", title: "test"})
+
+          assert branch_name =~ "symphony/pri-168"
+
+          {current, 0} = System.cmd("git", ["rev-parse", "--abbrev-ref", "HEAD"], cd: workspace_path)
+          assert String.trim(current) == branch_name
+        after
+          File.rm_rf(test_root)
+        end
+      else
+        IO.puts(:stderr, "SKIP: git not available in PATH")
+      end
+    end
+  end
 end
