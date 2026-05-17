@@ -254,21 +254,26 @@ defmodule SymphonyElixir.AgentRunner do
           {:error, {:pr_quality_gate_failed, reason}}
       end
     else
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when max_turns == -1 or turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns_label(max_turns)}")
+      if workspace_has_changes?(workspace) do
+        Logger.info("Workspace has agent changes for #{issue_context(issue)}; returning control to orchestrator for PR flow")
+        :ok
+      else
+        case continue_with_issue?(issue, issue_state_fetcher) do
+          {:continue, refreshed_issue} when max_turns == -1 or turn_number < max_turns ->
+            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns_label(max_turns)}")
 
-          next_turn_fn.(refreshed_issue, turn_number + 1)
+            next_turn_fn.(refreshed_issue, turn_number + 1)
 
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached max turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-          :ok
+          {:continue, refreshed_issue} ->
+            Logger.info("Reached max turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+            :ok
 
-        {:done, _refreshed_issue} ->
-          :ok
+          {:done, _refreshed_issue} ->
+            :ok
 
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     end
   end
@@ -278,6 +283,17 @@ defmodule SymphonyElixir.AgentRunner do
     # Check if .pr_created marker file exists
     marker_path = Path.join(workspace, ".pr_created")
     File.exists?(marker_path)
+  end
+
+  @doc false
+  def workspace_has_changes?(workspace) do
+    case System.cmd("git", ["status", "--porcelain"], cd: workspace, stderr_to_stdout: true) do
+      {"", 0} -> false
+      {_output, 0} -> true
+      {_output, _status} -> false
+    end
+  rescue
+    _ -> false
   end
 
   @doc false

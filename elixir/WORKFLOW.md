@@ -55,11 +55,11 @@ codex:
 You are working on branch `{{ branch_name }}`. Do NOT create a new branch.
 
 When your work is complete and tests pass:
-1. Stage and commit your changes with a descriptive message.
-2. Push: `git push -u origin {{ branch_name }}`
-3. Create PR: `gh pr create --head {{ branch_name }} --base main --title "<descriptive title>" --body "<description>"`
-4. Do NOT merge the PR yourself.
-5. Update the Linear issue state to In Review after PR creation.
+1. Leave your final file changes in the workspace.
+2. Do NOT run `git push`.
+3. Do NOT run `gh pr create`.
+4. Do NOT update Linear status.
+5. Symphony will stage allowed files, commit, push, create the PR, and move Linear to In Review.
 
 You are working on a Linear ticket `{{ issue.identifier }}`
 
@@ -120,17 +120,17 @@ Instructions:
 
 ### 状态流转
 - `Backlog` → 不动，等人移到 Todo
-- `Todo` → 立即变 `In Progress`，开始干活
+- `Todo` → 开始干活；如果需要状态变更，由 Symphony 控制面处理
 - `In Progress` → 正在实施中
-- `Human Review` → 干完了，等我来评审
+- `In Review` / `Human Review` → 干完了，等我来评审
 - `Merging` → 我确认通过，agent 执行合并
 - `Rework` → 我要改，agent 重新改
 - `Done` → 完成
 
 ### 执行步骤
 
-1. 确定 issue 当前状态，按上述状态流转执行
-2. 从 `Todo` 开始：立即变 `In Progress` → 创建/找到 workpad 评论
+1. 确定 issue 当前状态，按上述状态流转执行；不要自行修改 Linear 状态
+2. 从 `Todo` 开始：创建/找到 workpad 评论
 3. **先在 workpad 写计划**（用中文，面向业务人员）：
    - 要做什么
    - 怎么验证
@@ -139,10 +139,11 @@ Instructions:
 5. **每完成一个里程碑**，更新 workpad 的业务摘要
 6. 全部完成后：
    - 更新 workpad 最终版**业务摘要**
-   - 创建 PR，把 PR 链接贴到 issue 上
-   - 变更为 `Human Review`——等我来审
+   - 停止在本地文件改动状态
+   - 不要创建 PR，不要把 PR 链接贴到 issue 上，不要变更 issue 状态
+   - Symphony 会提交、推送、创建 PR，并把 issue 变更为 `In Review`
 
-### 评审阶段（Human Review）
+### 评审阶段（In Review / Human Review）
 - 我来看 workpad 的**业务摘要**和 PR
 - 通过 → 我会变 `Merging`，agent 自动合并
 - 要改 → 我变 `Rework`，agent 重新改
@@ -150,7 +151,7 @@ Instructions:
 ### 基本原则
 - 自主完成所有工作，不要问我要下一步
 - 卡住时（缺权限/密钥），在 workpad 写清楚卡在哪、需要我做什么
-- 只在真正做完了才变 `Human Review`
+- 只在真正做完了才停手，等待 Symphony 创建 PR 和变更状态
 
 ## Workpad 模板
 
