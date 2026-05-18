@@ -180,24 +180,34 @@ defmodule SymphonyElixir.Orchestrator do
                 {:dirty, dirty_files} ->
                   Logger.warning("Issue blocked after stall: issue_id=#{issue_id} issue_identifier=#{identifier} workspace_path=#{workspace_path} dirty_files=#{inspect(dirty_files)}")
 
-                  block_issue(state, issue_id, %{
-                    identifier: identifier,
-                    workspace_path: workspace_path,
-                    reason: "workspace_dirty_after_stall",
-                    dirty_files: dirty_files,
-                    last_error: "stalled/terminated: #{inspect(reason)}"
-                  }, DateTime.utc_now())
+                  block_issue(
+                    state,
+                    issue_id,
+                    %{
+                      identifier: identifier,
+                      workspace_path: workspace_path,
+                      reason: "workspace_dirty_after_stall",
+                      dirty_files: dirty_files,
+                      last_error: "stalled/terminated: #{inspect(reason)}"
+                    },
+                    DateTime.utc_now()
+                  )
 
                 {:unknown, _} when workspace_path != nil ->
                   Logger.warning("Issue blocked after stall: issue_id=#{issue_id} issue_identifier=#{identifier} workspace_path=#{workspace_path} reason=workspace_unknown")
 
-                  block_issue(state, issue_id, %{
-                    identifier: identifier,
-                    workspace_path: workspace_path,
-                    reason: "workspace_unknown_after_stall",
-                    dirty_files: [],
-                    last_error: "stalled/terminated: #{inspect(reason)}"
-                  }, DateTime.utc_now())
+                  block_issue(
+                    state,
+                    issue_id,
+                    %{
+                      identifier: identifier,
+                      workspace_path: workspace_path,
+                      reason: "workspace_unknown_after_stall",
+                      dirty_files: [],
+                      last_error: "stalled/terminated: #{inspect(reason)}"
+                    },
+                    DateTime.utc_now()
+                  )
 
                 _ ->
                   next_attempt = next_retry_attempt_from_running(running_entry)
@@ -222,13 +232,18 @@ defmodule SymphonyElixir.Orchestrator do
               if deterministic_infra_failure?(reason) and is_integer(next_attempt) and next_attempt >= 2 do
                 Logger.warning("Deterministic infra failure for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; blocking instead of retry")
 
-                block_issue(state, issue_id, %{
-                  identifier: running_entry.identifier,
-                  workspace_path: Map.get(running_entry, :workspace_path),
-                  reason: infra_failure_block_reason(reason),
-                  dirty_files: [],
-                  last_error: error_str
-                }, DateTime.utc_now())
+                block_issue(
+                  state,
+                  issue_id,
+                  %{
+                    identifier: running_entry.identifier,
+                    workspace_path: Map.get(running_entry, :workspace_path),
+                    reason: infra_failure_block_reason(reason),
+                    dirty_files: [],
+                    last_error: error_str
+                  },
+                  DateTime.utc_now()
+                )
               else
                 Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
@@ -309,13 +324,18 @@ defmodule SymphonyElixir.Orchestrator do
         {%{} = entry, {:error, {failure_phase, reason}}} ->
           Logger.warning("Control-plane PR flow failed for issue_id=#{issue_id} phase=#{failure_phase} reason=#{inspect(reason)}")
 
-          block_issue(state, issue_id, %{
-            identifier: entry.identifier,
-            workspace_path: Map.get(entry, :workspace_path),
-            reason: to_string(failure_phase),
-            dirty_files: [],
-            last_error: inspect(reason)
-          }, DateTime.utc_now())
+          block_issue(
+            state,
+            issue_id,
+            %{
+              identifier: entry.identifier,
+              workspace_path: Map.get(entry, :workspace_path),
+              reason: to_string(failure_phase),
+              dirty_files: [],
+              last_error: inspect(reason)
+            },
+            DateTime.utc_now()
+          )
       end
 
     notify_dashboard()
@@ -341,6 +361,7 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Force-killing attempt that did not shutdown in time: issue_id=#{issue_id}")
 
         pid = Map.get(entry, :pid)
+
         if is_pid(pid) do
           Process.exit(pid, :kill)
         end
@@ -417,13 +438,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp apply_poll_result(state, %State{} = new_state) do
-    %{state |
-      running: new_state.running,
-      claimed: new_state.claimed,
-      retry_attempts: new_state.retry_attempts,
-      blocked: new_state.blocked,
-      agent_totals: new_state.agent_totals,
-      reviews: new_state.reviews
+    %{
+      state
+      | running: new_state.running,
+        claimed: new_state.claimed,
+        retry_attempts: new_state.retry_attempts,
+        blocked: new_state.blocked,
+        agent_totals: new_state.agent_totals,
+        reviews: new_state.reviews
     }
   end
 
@@ -725,11 +747,12 @@ defmodule SymphonyElixir.Orchestrator do
       if needs_poll do
         stream_bytes_read = Map.get(running_entry, :stream_bytes_read, 0)
 
-        progress = SymphonyElixir.AgentRunner.AcpxSessionStream.read_progress(
-          acpx_record_id,
-          bytes_offset: stream_bytes_read,
-          session_root: state.acpx_session_root
-        )
+        progress =
+          SymphonyElixir.AgentRunner.AcpxSessionStream.read_progress(
+            acpx_record_id,
+            bytes_offset: stream_bytes_read,
+            session_root: state.acpx_session_root
+          )
 
         if progress.latest_event_at != nil do
           updated =
@@ -849,6 +872,7 @@ defmodule SymphonyElixir.Orchestrator do
     |> sort_issues_for_dispatch()
     |> Enum.reduce(state, fn issue, state_acc ->
       dispatchable = should_dispatch_issue?(issue, state_acc, active_states, terminal_states)
+
       if dispatchable do
         dispatch_issue(state_acc, issue, nil, nil, orchestrator_pid)
       else
@@ -905,12 +929,14 @@ defmodule SymphonyElixir.Orchestrator do
 
       config_slug when is_binary(config_slug) and config_slug != "" ->
         case Config.settings!().tracker.allow_unscoped_project_polling do
-          true when is_nil(issue_slug) -> true
+          true when is_nil(issue_slug) ->
+            true
+
           _ ->
             matched = is_binary(issue_slug) and String.downcase(issue_slug) == String.downcase(config_slug)
 
             unless matched do
-              Logger.debug("Issue rejected: project_slug mismatch for #{identifier} (issue_slug=#{inspect(issue_slug)}, config_slug=#{inspect(config_slug)})")
+              Logger.warning("Issue rejected: project_slug mismatch for #{identifier} (issue_slug=#{inspect(issue_slug)}, config_slug=#{inspect(config_slug)})")
             end
 
             matched
@@ -924,16 +950,20 @@ defmodule SymphonyElixir.Orchestrator do
   defp required_label_passed?(%Issue{labels: labels}) do
     case Config.settings!().tracker.required_label do
       nil -> true
-      required_label -> is_list(labels) and Enum.any?(labels, &String.downcase(&1) == String.downcase(required_label))
+      required_label -> is_list(labels) and Enum.any?(labels, &(String.downcase(&1) == String.downcase(required_label)))
     end
   end
 
   defp maybe_apply_dispatch_label(%Issue{id: issue_id}) do
     case Config.settings!().tracker.dispatch_label do
-      nil -> :ok
+      nil ->
+        :ok
+
       dispatch_label ->
         case Tracker.add_label(issue_id, dispatch_label) do
-          :ok -> :ok
+          :ok ->
+            :ok
+
           {:error, reason} ->
             Logger.warning("Failed to add dispatch label to #{issue_id}: #{inspect(reason)}")
             :ok
@@ -943,10 +973,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_post_dispatch_comment(%Issue{id: issue_id}) do
     case Config.settings!().tracker.dispatch_label do
-      nil -> :ok
+      nil ->
+        :ok
+
       _dispatch_label ->
         case Tracker.create_comment(issue_id, "🤖 Symphony has started working on this issue.") do
-          :ok -> :ok
+          :ok ->
+            :ok
+
           {:error, reason} ->
             Logger.warning("Failed to post dispatch comment to #{issue_id}: #{inspect(reason)}")
             :ok
@@ -1097,45 +1131,48 @@ defmodule SymphonyElixir.Orchestrator do
         maybe_post_dispatch_comment(issue)
 
         running_entry =
-          init_attempt_phase(%{
-            pid: pid,
-            ref: ref,
-            identifier: issue.identifier,
-            issue: issue,
-            worker_host: worker_host,
-            workspace_path: nil,
-            status: :running,
-            session_name: nil,
-            session_id: nil,
-            attempt_id: issue.id,
-            phase: "starting",
-            last_agent_message: nil,
-            last_agent_timestamp: nil,
-            last_agent_event: nil,
-            last_raw_event_at: nil,
-            last_raw_preview: nil,
-            agent_session_pid: nil,
-            agent_input_tokens: 0,
-            agent_output_tokens: 0,
-            agent_total_tokens: 0,
-            agent_cached_read_tokens: 0,
-            agent_cached_write_tokens: 0,
-            agent_last_reported_input_tokens: 0,
-            agent_last_reported_output_tokens: 0,
-            agent_last_reported_total_tokens: 0,
-            agent_last_reported_cached_read_tokens: 0,
-            agent_last_reported_cached_write_tokens: 0,
-            turn_count: 0,
-            retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now(),
-            last_workspace_activity_at: nil,
-            last_workspace_activity_scan_at: nil,
-            last_process_seen_at: nil,
-            progress_source: "none",
-            acpx_record_id: nil,
-            stream_bytes_read: 0,
-            branch_name: nil
-          }, "claimed")
+          init_attempt_phase(
+            %{
+              pid: pid,
+              ref: ref,
+              identifier: issue.identifier,
+              issue: issue,
+              worker_host: worker_host,
+              workspace_path: nil,
+              status: :running,
+              session_name: nil,
+              session_id: nil,
+              attempt_id: issue.id,
+              phase: "starting",
+              last_agent_message: nil,
+              last_agent_timestamp: nil,
+              last_agent_event: nil,
+              last_raw_event_at: nil,
+              last_raw_preview: nil,
+              agent_session_pid: nil,
+              agent_input_tokens: 0,
+              agent_output_tokens: 0,
+              agent_total_tokens: 0,
+              agent_cached_read_tokens: 0,
+              agent_cached_write_tokens: 0,
+              agent_last_reported_input_tokens: 0,
+              agent_last_reported_output_tokens: 0,
+              agent_last_reported_total_tokens: 0,
+              agent_last_reported_cached_read_tokens: 0,
+              agent_last_reported_cached_write_tokens: 0,
+              turn_count: 0,
+              retry_attempt: normalize_retry_attempt(attempt),
+              started_at: DateTime.utc_now(),
+              last_workspace_activity_at: nil,
+              last_workspace_activity_scan_at: nil,
+              last_process_seen_at: nil,
+              progress_source: "none",
+              acpx_record_id: nil,
+              stream_bytes_read: 0,
+              branch_name: nil
+            },
+            "claimed"
+          )
 
         running =
           Map.put(state.running, issue.id, running_entry)
@@ -1391,8 +1428,8 @@ defmodule SymphonyElixir.Orchestrator do
     worker_host = metadata[:worker_host]
 
     if retry_candidate_issue?(issue, terminal_state_set()) and
-       dispatch_slots_available?(issue, state) and
-       worker_slots_available?(state, worker_host) do
+         dispatch_slots_available?(issue, state) and
+         worker_slots_available?(state, worker_host) do
       {:noreply, dispatch_issue(state, issue, attempt, worker_host, nil)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
@@ -1424,19 +1461,20 @@ defmodule SymphonyElixir.Orchestrator do
       last_error: last_error
     } = metadata
 
-    Logger.info(
-      "Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} reason=#{reason} workspace_path=#{workspace_path} dirty_files=#{inspect(dirty_files)}"
-    )
+    Logger.info("Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} reason=#{reason} workspace_path=#{workspace_path} dirty_files=#{inspect(dirty_files)}")
 
     state
-    |> Map.put(:blocked, Map.put(state.blocked, issue_id, %{
-      identifier: identifier,
-      workspace_path: workspace_path,
-      reason: reason,
-      dirty_files: dirty_files,
-      last_error: last_error,
-      blocked_at: blocked_at
-    }))
+    |> Map.put(
+      :blocked,
+      Map.put(state.blocked, issue_id, %{
+        identifier: identifier,
+        workspace_path: workspace_path,
+        reason: reason,
+        dirty_files: dirty_files,
+        last_error: last_error,
+        blocked_at: blocked_at
+      })
+    )
     |> release_issue_claim(issue_id)
     |> Map.put(:retry_attempts, Map.delete(state.retry_attempts, issue_id))
   end
@@ -1501,6 +1539,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp check_workspace_dirty(nil, _worker_host), do: {:unknown, []}
+
   defp check_workspace_dirty(workspace_path, worker_host) when is_binary(workspace_path) do
     Workspace.dirty_files(workspace_path, worker_host)
   end
@@ -2029,7 +2068,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     consecutive_parser_errors =
       case event do
-        :parser_error -> (Map.get(running_entry, :consecutive_parser_errors, 0) + 1)
+        :parser_error -> Map.get(running_entry, :consecutive_parser_errors, 0) + 1
         _ -> 0
       end
 
@@ -2055,12 +2094,15 @@ defmodule SymphonyElixir.Orchestrator do
         agent_last_reported_cached_write_tokens: max(last_reported_cached_write, Map.get(token_delta, :cached_write_reported, 0)),
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update),
         consecutive_parser_errors: consecutive_parser_errors,
-        progress_source: update_progress_source(Map.merge(running_entry, %{
-          last_raw_event_at: Map.get(update, :raw_event_at) || Map.get(running_entry, :last_raw_event_at),
-          last_workspace_activity_at: Map.get(running_entry, :last_workspace_activity_at),
-          last_process_seen_at: Map.get(running_entry, :last_process_seen_at),
-          consecutive_parser_errors: consecutive_parser_errors
-        }))
+        progress_source:
+          update_progress_source(
+            Map.merge(running_entry, %{
+              last_raw_event_at: Map.get(update, :raw_event_at) || Map.get(running_entry, :last_raw_event_at),
+              last_workspace_activity_at: Map.get(running_entry, :last_workspace_activity_at),
+              last_process_seen_at: Map.get(running_entry, :last_process_seen_at),
+              consecutive_parser_errors: consecutive_parser_errors
+            })
+          )
       })
       |> maybe_transition_attempt_phase(phase, Map.get(update, :timestamp))
 
@@ -2094,16 +2136,24 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       Map.get(running_entry, :last_raw_event_at) != nil ->
         case Map.get(running_entry, :consecutive_parser_errors, 0) > @max_consecutive_parser_errors do
-          true -> "parser_error"
+          true ->
+            "parser_error"
+
           false ->
             case Map.get(running_entry, :progress_source) do
               "acpx_session_stream" -> "acpx_session_stream"
               _ -> "raw_event"
             end
         end
-      Map.get(running_entry, :last_workspace_activity_at) != nil -> "workspace_activity"
-      Map.get(running_entry, :last_process_seen_at) != nil -> "process_alive"
-      true -> "none"
+
+      Map.get(running_entry, :last_workspace_activity_at) != nil ->
+        "workspace_activity"
+
+      Map.get(running_entry, :last_process_seen_at) != nil ->
+        "process_alive"
+
+      true ->
+        "none"
     end
   end
 
@@ -2201,6 +2251,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp extract_event_text(%{payload: payload}) when is_map(payload) do
     content = payload["content"] || payload["update"] || ""
+
     case content do
       c when is_map(c) -> c["text"] || inspect(c)
       c when is_binary(c) -> c
@@ -2233,7 +2284,7 @@ defmodule SymphonyElixir.Orchestrator do
           {:violation, source_checkout_path}
 
         String.contains?(text_lower, forbidden_lower) and
-          String.contains?(text_lower, "cd ") ->
+            String.contains?(text_lower, "cd ") ->
           {:violation, source_checkout_path}
 
         true ->
@@ -2416,15 +2467,15 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp apply_agent_rate_limits(state, _update), do: state
 
-defp apply_token_delta(agent_totals, token_delta) do
+  defp apply_token_delta(agent_totals, token_delta) do
     input_tokens = Map.get(agent_totals, :input_tokens, 0) + token_delta.input_tokens
     output_tokens = Map.get(agent_totals, :output_tokens, 0) + token_delta.output_tokens
     total_tokens = Map.get(agent_totals, :total_tokens, 0) + token_delta.total_tokens
     cached_read_tokens = Map.get(agent_totals, :cached_read_tokens, 0) + Map.get(token_delta, :cached_read_tokens, 0)
     cached_write_tokens = Map.get(agent_totals, :cached_write_tokens, 0) + Map.get(token_delta, :cached_write_tokens, 0)
+
     seconds_running =
       Map.get(agent_totals, :seconds_running, 0) + Map.get(token_delta, :seconds_running, 0)
-
 
     %{
       input_tokens: max(0, input_tokens),
@@ -2786,13 +2837,18 @@ defp apply_token_delta(agent_totals, token_delta) do
       not config.review.enabled ->
         Logger.warning("Issue in Auto Review but review is disabled: #{issue_context(issue)}; blocking to prevent silent stuck")
 
-        block_issue(state, issue.id, %{
-          identifier: issue.identifier,
-          workspace_path: nil,
-          reason: "auto_review_disabled",
-          dirty_files: [],
-          last_error: "issue in Auto Review state but review.enabled=false"
-        }, DateTime.utc_now())
+        block_issue(
+          state,
+          issue.id,
+          %{
+            identifier: issue.identifier,
+            workspace_path: nil,
+            reason: "auto_review_disabled",
+            dirty_files: [],
+            last_error: "issue in Auto Review state but review.enabled=false"
+          },
+          DateTime.utc_now()
+        )
 
       Map.has_key?(reviews, issue.id) ->
         state

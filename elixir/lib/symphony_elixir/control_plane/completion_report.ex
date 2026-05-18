@@ -61,7 +61,7 @@ defmodule SymphonyElixir.ControlPlane.CompletionReport do
     status = Map.get(report, "status")
 
     cond do
-      status == "ready_for_review" -> :ok
+      status in ["ready_for_review", "completed"] -> :ok
       status == "blocked" -> {:error, {:agent_blocked, report}}
       true -> {:error, {:invalid_status, status}}
     end
