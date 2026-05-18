@@ -15,7 +15,10 @@ defmodule SymphonyElixir.Orchestrator do
   @default_continuation_retry_delay_ms 300_000
   @failure_retry_base_ms 10_000
   @max_completed_set_size 1_000
-  @blocked_ttl_seconds 86_400
+  @blocked_ttl_by_reason %{
+    "agent_rate_limited" => 21_600,
+    :default => 86_400
+  }
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @attempt_shutdown_timeout_ms 15_000
@@ -763,10 +766,61 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry = Map.get(state_acc.running, issue_id)
           state_acc = maybe_poll_acpx_session_stream(state_acc, issue_id, running_entry)
           running_entry = Map.get(state_acc.running, issue_id)
-          state_acc = maybe_finalize_completed_agent_work(state_acc, issue_id, running_entry, orchestrator_pid)
+          state_acc = maybe_reconcile_orphaned_running_entry(state_acc, issue_id, running_entry)
           running_entry = Map.get(state_acc.running, issue_id)
-          restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
+
+          if is_nil(running_entry) do
+            state_acc
+          else
+            state_acc = maybe_finalize_completed_agent_work(state_acc, issue_id, running_entry, orchestrator_pid)
+            running_entry = Map.get(state_acc.running, issue_id)
+            restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
+          end
         end)
+    end
+  end
+
+  defp maybe_reconcile_orphaned_running_entry(state, _issue_id, nil), do: state
+
+  defp maybe_reconcile_orphaned_running_entry(state, issue_id, running_entry) do
+    pid = Map.get(running_entry, :pid)
+    workspace_path = Map.get(running_entry, :workspace_path)
+
+    cond do
+      is_pid(pid) and Process.alive?(pid) ->
+        state
+
+      is_binary(workspace_path) and workspace_path != "" and AgentRunner.agent_completed_work?(workspace_path) ->
+        state
+
+      true ->
+        stall_timeout_ms = Config.settings!().agent.stall_timeout_ms
+        now = DateTime.utc_now()
+        latest_event_at = Map.get(running_entry, :latest_event_at)
+        last_workspace_activity_at = Map.get(running_entry, :last_workspace_activity_at)
+
+        event_stale = is_nil(latest_event_at) or DateTime.diff(now, latest_event_at, :millisecond) > stall_timeout_ms
+        workspace_stale = is_nil(last_workspace_activity_at) or DateTime.diff(now, last_workspace_activity_at, :millisecond) > stall_timeout_ms
+
+        if event_stale and workspace_stale do
+          Logger.warning("Orphaned running entry detected: issue_id=#{issue_id} identifier=#{Map.get(running_entry, :identifier)}; blocking issue")
+
+          state
+          |> block_issue(
+            issue_id,
+            %{
+              identifier: Map.get(running_entry, :identifier),
+              workspace_path: workspace_path,
+              reason: "orphaned_running_entry",
+              dirty_files: [],
+              last_error: "agent process dead with no progress signals"
+            },
+            DateTime.utc_now()
+          )
+          |> Map.put(:running, Map.delete(state.running, issue_id))
+        else
+          state
+        end
     end
   end
 
@@ -1667,6 +1721,12 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
 
+  @doc false
+  @spec expire_blocked_entries_for_test(State.t()) :: State.t()
+  def expire_blocked_entries_for_test(%State{} = state) do
+    expire_blocked_entries(state)
+  end
+
   @spec block_issue(State.t(), String.t(), map(), DateTime.t()) :: State.t()
   def block_issue(%State{} = state, issue_id, metadata, blocked_at) when is_binary(issue_id) and is_map(metadata) do
     %{
@@ -1700,6 +1760,12 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | blocked: Map.delete(state.blocked, issue_id)}
   end
 
+  defp blocked_ttl_for_reason(reason) when is_binary(reason) do
+    Map.get(@blocked_ttl_by_reason, reason, @blocked_ttl_by_reason[:default])
+  end
+
+  defp blocked_ttl_for_reason(_), do: @blocked_ttl_by_reason[:default]
+
   defp expire_blocked_entries(%State{blocked: blocked} = state) do
     now = DateTime.utc_now()
 
@@ -1708,7 +1774,8 @@ defmodule SymphonyElixir.Orchestrator do
       |> Enum.filter(fn {_issue_id, entry} ->
         case Map.get(entry, :blocked_at) do
           %DateTime{} = blocked_at ->
-            DateTime.diff(now, blocked_at, :second) > @blocked_ttl_seconds
+            ttl = blocked_ttl_for_reason(Map.get(entry, :reason))
+            DateTime.diff(now, blocked_at, :second) > ttl
 
           _ ->
             false

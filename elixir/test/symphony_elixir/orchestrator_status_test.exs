@@ -2537,6 +2537,125 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
   end
 
+  describe "blocked TTL by reason (Task 3)" do
+    test "agent_rate_limited blocked entry expires after 6 hours" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :BlockedTtlRateLimitedOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-ttl-rate-limited"
+      blocked_at = DateTime.add(DateTime.utc_now(), -21_601, :second)
+
+      blocked_entry = %{
+        identifier: "MT-TTL-RL",
+        workspace_path: "/tmp/ws/MT-TTL-RL",
+        reason: "agent_rate_limited",
+        dirty_files: [],
+        last_error: "429 rate limit",
+        blocked_at: blocked_at
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      new_state =
+        initial_state
+        |> Map.put(:blocked, %{issue_id => blocked_entry})
+
+      :sys.replace_state(pid, fn _ -> new_state end)
+
+      state_before = :sys.get_state(pid)
+      state_after = Orchestrator.expire_blocked_entries_for_test(state_before)
+      refute Map.has_key?(state_after.blocked, issue_id)
+    end
+
+    test "other reason blocked entry expires after 24 hours" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :BlockedTtlDefaultOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-ttl-default"
+      blocked_at = DateTime.add(DateTime.utc_now(), -86_401, :second)
+
+      blocked_entry = %{
+        identifier: "MT-TTL-DEFAULT",
+        workspace_path: "/tmp/ws/MT-TTL-DEFAULT",
+        reason: "workspace_dirty",
+        dirty_files: [],
+        last_error: "dirty",
+        blocked_at: blocked_at
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      new_state =
+        initial_state
+        |> Map.put(:blocked, %{issue_id => blocked_entry})
+
+      :sys.replace_state(pid, fn _ -> new_state end)
+
+      state_before = :sys.get_state(pid)
+      state_after = Orchestrator.expire_blocked_entries_for_test(state_before)
+      refute Map.has_key?(state_after.blocked, issue_id)
+    end
+
+    test "agent_rate_limited blocked entry does NOT expire within 6 hours" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :BlockedTtlRateLimitedNotExpiredOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue_id = "issue-ttl-rl-not-expired"
+      blocked_at = DateTime.add(DateTime.utc_now(), -10_800, :second)
+
+      blocked_entry = %{
+        identifier: "MT-TTL-RL-ALIVE",
+        workspace_path: "/tmp/ws/MT-TTL-RL-ALIVE",
+        reason: "agent_rate_limited",
+        dirty_files: [],
+        last_error: "429 rate limit",
+        blocked_at: blocked_at
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      new_state =
+        initial_state
+        |> Map.put(:blocked, %{issue_id => blocked_entry})
+
+      :sys.replace_state(pid, fn _ -> new_state end)
+
+      state_before = :sys.get_state(pid)
+      state_after = Orchestrator.expire_blocked_entries_for_test(state_before)
+      assert Map.has_key?(state_after.blocked, issue_id)
+    end
+  end
+
   describe "workspace activity scan in tick cycle (Task 10)" do
     test "workspace mtime changes update last_workspace_activity_at in running entry" do
       if git_available?() do
@@ -2890,11 +3009,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       GenServer.call(pid, :run_reconcile)
 
       state = :sys.get_state(pid)
-      updated_entry = Map.get(state.running, issue_id)
 
-      assert updated_entry != nil
-      assert updated_entry.last_process_seen_at == nil
-      assert updated_entry.progress_source == "none"
+      refute Map.has_key?(state.running, issue_id)
+      assert Map.has_key?(state.blocked, issue_id)
+      assert state.blocked[issue_id].reason == "orphaned_running_entry"
     end
   end
 
@@ -4521,6 +4639,190 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       snapshot = GenServer.call(pid, :snapshot)
       assert %{running: [snapshot_entry]} = snapshot
       assert snapshot_entry.branch_name == "symphony/pri-168-test"
+    end
+  end
+
+  describe "orphaned running entry reconciliation (Task 4)" do
+    test "pid dead + no progress signals → entry removed from running, issue blocked with reason orphaned_running_entry" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 1_000
+      )
+
+      issue_id = "issue-orphaned-dead"
+      orchestrator_name = Module.concat(__MODULE__, :OrphanedDeadOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      dead_pid = spawn(fn -> :ok end)
+      Process.sleep(50)
+      refute Process.alive?(dead_pid)
+
+      ref = make_ref()
+      stale_time = DateTime.add(DateTime.utc_now(), -5, :second)
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: dead_pid,
+        ref: ref,
+        identifier: "MT-ORPHAN-DEAD",
+        issue: %Issue{id: issue_id, identifier: "MT-ORPHAN-DEAD", state: "In Progress"},
+        session_id: nil,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: stale_time,
+        started_at: stale_time,
+        workspace_path: nil,
+        last_workspace_activity_at: stale_time,
+        last_process_seen_at: nil,
+        progress_source: "none",
+        status: :running
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      GenServer.call(pid, :run_reconcile)
+
+      state = :sys.get_state(pid)
+
+      refute Map.has_key?(state.running, issue_id)
+      assert Map.has_key?(state.blocked, issue_id)
+      assert state.blocked[issue_id].reason == "orphaned_running_entry"
+      assert state.blocked[issue_id].last_error == "agent process dead with no progress signals"
+      assert state.blocked[issue_id].identifier == "MT-ORPHAN-DEAD"
+    end
+
+    test "pid dead + completion report exists → NOT blocked (completion flow handles it)" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 1_000
+      )
+
+      issue_id = "issue-orphaned-completed"
+      orchestrator_name = Module.concat(__MODULE__, :OrphanedCompletedOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      dead_pid = spawn(fn -> :ok end)
+      Process.sleep(50)
+      refute Process.alive?(dead_pid)
+
+      workspace_path = Path.join(System.tmp_dir!(), "symphony-orphaned-completed-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(workspace_path, ".symphony"))
+      File.write!(Path.join(workspace_path, ".symphony/agent-completion.json"), Jason.encode!(%{status: "ready_for_review"}))
+
+      on_exit(fn -> File.rm_rf(workspace_path) end)
+
+      ref = make_ref()
+      stale_time = DateTime.add(DateTime.utc_now(), -5, :second)
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: dead_pid,
+        ref: ref,
+        identifier: "MT-ORPHAN-COMP",
+        issue: %Issue{id: issue_id, identifier: "MT-ORPHAN-COMP", state: "In Progress"},
+        session_id: nil,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: stale_time,
+        started_at: stale_time,
+        workspace_path: workspace_path,
+        last_workspace_activity_at: stale_time,
+        last_process_seen_at: nil,
+        progress_source: "none",
+        status: :running
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      GenServer.call(pid, :run_reconcile)
+
+      state = :sys.get_state(pid)
+
+      blocked_entry = Map.get(state.blocked, issue_id)
+      assert blocked_entry == nil or blocked_entry.reason != "orphaned_running_entry"
+    end
+
+    test "pid alive → not affected by orphaned check" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_api_token: nil,
+        agent_stall_timeout_ms: 300_000
+      )
+
+      issue_id = "issue-orphaned-alive"
+      orchestrator_name = Module.concat(__MODULE__, :OrphanedAliveOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      alive_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
+      ref = make_ref()
+      started_at = DateTime.utc_now()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: alive_pid,
+        ref: ref,
+        identifier: "MT-ORPHAN-ALIVE",
+        issue: %Issue{id: issue_id, identifier: "MT-ORPHAN-ALIVE", state: "In Progress"},
+        session_id: nil,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        workspace_path: nil,
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        progress_source: "none",
+        status: :running
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      GenServer.call(pid, :run_reconcile)
+
+      state = :sys.get_state(pid)
+
+      assert Map.has_key?(state.running, issue_id)
+      refute Map.has_key?(state.blocked, issue_id)
+
+      send(alive_pid, :done)
     end
   end
 end

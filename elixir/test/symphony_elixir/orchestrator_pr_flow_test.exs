@@ -34,6 +34,7 @@ defmodule SymphonyElixir.OrchestratorPrFlowTest do
         {"git", ["commit", "-m", _message]} -> {"committed", 0}
         {"git", ["rev-parse", "HEAD"]} -> {"abc123\n", 0}
         {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} -> {"pushed", 0}
+        {"gh", ["pr", "list" | _rest]} -> {"[]\n", 0}
         {"gh", ["pr", "create" | _rest]} -> {"https://github.com/acme/repo/pull/170\n", 0}
       end
     end
@@ -99,6 +100,7 @@ defmodule SymphonyElixir.OrchestratorPrFlowTest do
         {"git", ["commit", "-m", _message]} -> {"committed", 0}
         {"git", ["rev-parse", "HEAD"]} -> {"abc123\n", 0}
         {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} -> {"pushed", 0}
+        {"gh", ["pr", "list" | _rest]} -> {"[]\n", 0}
         {"gh", ["pr", "create" | _rest]} -> {"https://github.com/acme/repo/pull/170\n", 0}
       end
     end

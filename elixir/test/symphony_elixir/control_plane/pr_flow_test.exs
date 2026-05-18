@@ -55,6 +55,9 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
         {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} ->
           {"pushed", 0}
 
+        {"gh", ["pr", "list" | _]} ->
+          {"[]\n", 0}
+
         {"gh", ["pr", "create" | rest]} ->
           assert "--head" in rest
           {"https://github.com/acme/repo/pull/123\n", 0}
@@ -76,6 +79,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
     assert result.changed_files == ["lib/example.ex", "test/example_test.exs"]
     assert result.commit_sha == "abc123"
     assert result.pr_url == "https://github.com/acme/repo/pull/123"
+    assert result.tracker_updated == true
     assert_received {:tracker_update, "issue-pr-flow", "In Review"}
   end
 
@@ -105,6 +109,9 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
         {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} ->
           {"pushed", 0}
 
+        {"gh", ["pr", "list" | _]} ->
+          {"[]\n", 0}
+
         {"gh", ["pr", "create" | _rest]} ->
           {"https://github.com/acme/repo/pull/123\n", 0}
       end
@@ -118,6 +125,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
              )
 
     assert result.changed_files == ["lib/example.ex"]
+    assert result.tracker_updated == true
     assert_received {:command, "git", ["add", "--", "lib/example.ex"], _}
     refute_received {:command, "git", ["add", "--", "lib/example.ex", ".symphony/agent-completion.json"], _}
   end
@@ -148,6 +156,9 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
         {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} ->
           {"pushed", 0}
 
+        {"gh", ["pr", "list" | _]} ->
+          {"[]\n", 0}
+
         {"gh", ["pr", "create" | _rest]} ->
           {"https://github.com/acme/repo/pull/123\n", 0}
       end
@@ -161,6 +172,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
              )
 
     assert result.changed_files == ["lib/example.ex"]
+    assert result.tracker_updated == true
     assert_received {:command, "git", ["add", "--", "lib/example.ex"], _}
   end
 
@@ -214,6 +226,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
         {"git", ["commit", "-m", _message]} -> {"committed", 0}
         {"git", ["rev-parse", "HEAD"]} -> {"abc123\n", 0}
         {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} -> {"pushed", 0}
+        {"gh", ["pr", "list" | _]} -> {"[]\n", 0}
         {"gh", ["pr", "create" | _rest]} -> {"authentication failed", 1}
       end
     end
@@ -257,5 +270,176 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
              )
 
     refute_received {:command, "git", ["add" | _], _}
+  end
+
+  test "tracker_update failure still returns ok with tracker_updated false" do
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_tracker_fail_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path, ["lib/example.ex"])
+
+    command_runner = fn cmd, args, _opts ->
+      case {cmd, args} do
+        {"git", ["status", "--porcelain"]} -> {" M lib/example.ex\n", 0}
+        {"git", ["add", "--", "lib/example.ex"]} -> {"", 0}
+        {"git", ["commit", "-m", _message]} -> {"committed", 0}
+        {"git", ["rev-parse", "HEAD"]} -> {"abc123\n", 0}
+        {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} -> {"pushed", 0}
+        {"gh", ["pr", "list" | _]} -> {"[]\n", 0}
+        {"gh", ["pr", "create" | _rest]} -> {"https://github.com/acme/repo/pull/42\n", 0}
+      end
+    end
+
+    tracker_update = fn _issue_id, _state_name ->
+      {:error, :timeout}
+    end
+
+    assert {:ok, result} =
+             PrFlow.run(issue(), workspace_path,
+               branch_name: "symphony/pri-170-owned-pr",
+               command_runner: command_runner,
+               tracker_update: tracker_update
+             )
+
+    assert result.pr_url == "https://github.com/acme/repo/pull/42"
+    assert result.tracker_updated == false
+  end
+
+  test "tracker_update success sets tracker_updated true" do
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_tracker_ok_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path, ["lib/example.ex"])
+
+    command_runner = fn cmd, args, _opts ->
+      case {cmd, args} do
+        {"git", ["status", "--porcelain"]} -> {" M lib/example.ex\n", 0}
+        {"git", ["add", "--", "lib/example.ex"]} -> {"", 0}
+        {"git", ["commit", "-m", _message]} -> {"committed", 0}
+        {"git", ["rev-parse", "HEAD"]} -> {"abc123\n", 0}
+        {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} -> {"pushed", 0}
+        {"gh", ["pr", "list" | _]} -> {"[]\n", 0}
+        {"gh", ["pr", "create" | _rest]} -> {"https://github.com/acme/repo/pull/99\n", 0}
+      end
+    end
+
+    assert {:ok, result} =
+             PrFlow.run(issue(), workspace_path,
+               branch_name: "symphony/pri-170-owned-pr",
+               command_runner: command_runner,
+               tracker_update: fn _, _ -> :ok end
+             )
+
+    assert result.tracker_updated == true
+  end
+
+  test "existing open PR skips creation and returns existing URL" do
+    parent = self()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_existing_pr_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path, ["lib/example.ex"])
+
+    command_runner = fn cmd, args, opts ->
+      send(parent, {:command, cmd, args, opts})
+
+      case {cmd, args} do
+        {"git", ["status", "--porcelain"]} ->
+          {" M lib/example.ex\n", 0}
+
+        {"git", ["add", "--", "lib/example.ex"]} ->
+          {"", 0}
+
+        {"git", ["commit", "-m", _message]} ->
+          {"committed", 0}
+
+        {"git", ["rev-parse", "HEAD"]} ->
+          {"abc123\n", 0}
+
+        {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} ->
+          {"pushed", 0}
+
+        {"gh", ["pr", "list" | _]} ->
+          {"[{\"url\":\"https://github.com/acme/repo/pull/7\"}]\n", 0}
+      end
+    end
+
+    assert {:ok, result} =
+             PrFlow.run(issue(), workspace_path,
+               branch_name: "symphony/pri-170-owned-pr",
+               command_runner: command_runner,
+               tracker_update: fn _, _ -> :ok end
+             )
+
+    assert result.pr_url == "https://github.com/acme/repo/pull/7"
+    assert result.tracker_updated == true
+    refute_received {:command, "gh", ["pr", "create" | _], _}
+  end
+
+  test "gh pr list failure degrades to creating new PR" do
+    parent = self()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_list_fail_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path, ["lib/example.ex"])
+
+    command_runner = fn cmd, args, opts ->
+      send(parent, {:command, cmd, args, opts})
+
+      case {cmd, args} do
+        {"git", ["status", "--porcelain"]} -> {" M lib/example.ex\n", 0}
+        {"git", ["add", "--", "lib/example.ex"]} -> {"", 0}
+        {"git", ["commit", "-m", _message]} -> {"committed", 0}
+        {"git", ["rev-parse", "HEAD"]} -> {"abc123\n", 0}
+        {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} -> {"pushed", 0}
+        {"gh", ["pr", "list" | _]} -> {"gh not authenticated", 1}
+        {"gh", ["pr", "create" | _rest]} -> {"https://github.com/acme/repo/pull/55\n", 0}
+      end
+    end
+
+    assert {:ok, result} =
+             PrFlow.run(issue(), workspace_path,
+               branch_name: "symphony/pri-170-owned-pr",
+               command_runner: command_runner,
+               tracker_update: fn _, _ -> :ok end
+             )
+
+    assert result.pr_url == "https://github.com/acme/repo/pull/55"
+    assert result.tracker_updated == true
+    assert_received {:command, "gh", ["pr", "create" | _], _}
+  end
+
+  test "no existing open PR proceeds to create new PR" do
+    parent = self()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_no_existing_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path, ["lib/example.ex"])
+
+    command_runner = fn cmd, args, opts ->
+      send(parent, {:command, cmd, args, opts})
+
+      case {cmd, args} do
+        {"git", ["status", "--porcelain"]} -> {" M lib/example.ex\n", 0}
+        {"git", ["add", "--", "lib/example.ex"]} -> {"", 0}
+        {"git", ["commit", "-m", _message]} -> {"committed", 0}
+        {"git", ["rev-parse", "HEAD"]} -> {"abc123\n", 0}
+        {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} -> {"pushed", 0}
+        {"gh", ["pr", "list" | _]} -> {"[]\n", 0}
+        {"gh", ["pr", "create" | _rest]} -> {"https://github.com/acme/repo/pull/88\n", 0}
+      end
+    end
+
+    assert {:ok, result} =
+             PrFlow.run(issue(), workspace_path,
+               branch_name: "symphony/pri-170-owned-pr",
+               command_runner: command_runner,
+               tracker_update: fn _, _ -> :ok end
+             )
+
+    assert result.pr_url == "https://github.com/acme/repo/pull/88"
+    assert result.tracker_updated == true
+    assert_received {:command, "gh", ["pr", "list" | _], _}
+    assert_received {:command, "gh", ["pr", "create" | _], _}
   end
 end

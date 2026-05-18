@@ -214,6 +214,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
 
   defp merge_event(acc, _type, _data) do
     acc
+    |> Map.put(:latest_error, nil)
   end
 
   defp benign_session_load_miss?(data) when is_map(data) do
