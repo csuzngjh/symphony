@@ -48,8 +48,9 @@ defmodule SymphonyElixir.Config.Schema do
       field(:kind, :string)
       field(:endpoint, :string, default: "https://api.linear.app/graphql")
       field(:api_key, :string)
-      field(:project_slug, :string)
-      field(:assignee, :string)
+    field(:project_slug, :string)
+    field(:allow_unscoped_project_polling, :boolean, default: false)
+    field(:assignee, :string)
       field(:issue_identifiers, {:array, :string}, default: [])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress", "Auto Review"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
@@ -62,7 +63,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :issue_identifiers, :active_states, :terminal_states, :required_label, :dispatch_label],
+        [:kind, :endpoint, :api_key, :project_slug, :allow_unscoped_project_polling, :assignee, :issue_identifiers, :active_states, :terminal_states, :required_label, :dispatch_label],
         empty_values: []
       )
       |> update_change(:issue_identifiers, &normalize_issue_identifiers/1)

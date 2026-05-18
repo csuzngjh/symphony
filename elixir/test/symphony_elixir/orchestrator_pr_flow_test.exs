@@ -1,11 +1,28 @@
 defmodule SymphonyElixir.OrchestratorPrFlowTest do
   use SymphonyElixir.TestSupport
 
+  defp setup_completion_report(workspace_path, files \\ ["lib/example.ex"]) do
+    completion_dir = Path.join(workspace_path, ".symphony")
+    File.mkdir_p!(completion_dir)
+
+    completion_content = Jason.encode!(%{
+      "status" => "ready_for_review",
+      "changed_files" => files,
+      "tests" => [%{"command" => "mix test", "result" => "pass"}]
+    })
+
+    File.write!(Path.join(completion_dir, "agent-completion.json"), completion_content)
+  end
+
   test "normal agent exit runs control-plane commit, push, PR, and tracker transition" do
     parent = self()
     issue_id = "issue-control-plane-pr"
     ref = make_ref()
     worker_pid = self()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_orch_pr_flow_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path)
 
     command_runner = fn cmd, args, opts ->
       send(parent, {:command, cmd, args, opts})
@@ -39,7 +56,7 @@ defmodule SymphonyElixir.OrchestratorPrFlowTest do
 
     put_running_entry(pid, issue_id, ref, worker_pid, %{
       branch_name: "symphony/pri-170-owned-pr",
-      workspace_path: "D:/tmp/workspace"
+      workspace_path: workspace_path
     })
 
     send(pid, {:DOWN, ref, :process, worker_pid, :normal})
@@ -58,6 +75,10 @@ defmodule SymphonyElixir.OrchestratorPrFlowTest do
     issue_id = "issue-control-plane-push-fail"
     ref = make_ref()
     worker_pid = self()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_orch_pr_flow_push_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path)
 
     command_runner = fn cmd, args, opts ->
       send(parent, {:command, cmd, args, opts})
@@ -90,7 +111,7 @@ defmodule SymphonyElixir.OrchestratorPrFlowTest do
 
     put_running_entry(pid, issue_id, ref, worker_pid, %{
       branch_name: "symphony/pri-170-owned-pr",
-      workspace_path: "D:/tmp/workspace"
+      workspace_path: workspace_path
     })
 
     send(pid, {:DOWN, ref, :process, worker_pid, :normal})

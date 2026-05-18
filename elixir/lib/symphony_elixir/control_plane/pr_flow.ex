@@ -7,6 +7,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
   side-effects in the Symphony control plane so they can be tested and audited.
   """
 
+  alias SymphonyElixir.ControlPlane.CompletionReport
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Tracker
 
@@ -31,8 +32,10 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
     tracker_update = Keyword.get(opts, :tracker_update, &Tracker.update_issue_state/2)
 
     with {:ok, changed_files} <- changed_files(workspace_path, command_runner),
-         :ok <- validate_changed_files(changed_files),
-         :ok <- git_add(workspace_path, changed_files, command_runner),
+          :ok <- validate_changed_files(changed_files),
+          {:ok, completion_report} <- CompletionReport.read(workspace_path),
+          {:ok, _report} <- CompletionReport.validate(completion_report, changed_files: changed_files, command_runner: command_runner),
+          :ok <- git_add(workspace_path, changed_files, command_runner),
          :ok <- git_commit(workspace_path, issue, command_runner),
          {:ok, commit_sha} <- git_rev_parse(workspace_path, command_runner),
          :ok <- git_push(workspace_path, branch_name, command_runner),

@@ -301,6 +301,91 @@ defmodule SymphonyElixir.AgentRunnerTest do
     end
   end
 
+  describe "agent_completed_work?/1" do
+    test "returns true when agent-completion.json exists with status completed" do
+      dir = Path.join(System.tmp_dir!(), "test_agent_completed_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, ".symphony"))
+
+      try do
+        File.write!(
+          Path.join(dir, ".symphony/agent-completion.json"),
+          ~s({"status": "completed", "tests_passed": 19, "tests_failed": 0})
+        )
+
+        assert AgentRunner.agent_completed_work?(dir) == true
+      after
+        File.rm_rf(dir)
+      end
+    end
+
+    test "returns false when agent-completion.json has status failed" do
+      dir = Path.join(System.tmp_dir!(), "test_agent_failed_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, ".symphony"))
+
+      try do
+        File.write!(
+          Path.join(dir, ".symphony/agent-completion.json"),
+          ~s({"status": "failed", "error": "something went wrong"})
+        )
+
+        assert AgentRunner.agent_completed_work?(dir) == false
+      after
+        File.rm_rf(dir)
+      end
+    end
+
+    test "returns false when agent-completion.json does not exist" do
+      dir = Path.join(System.tmp_dir!(), "test_no_completion_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+
+      try do
+        assert AgentRunner.agent_completed_work?(dir) == false
+      after
+        File.rm_rf(dir)
+      end
+    end
+
+    test "returns false when .symphony directory does not exist" do
+      dir = Path.join(System.tmp_dir!(), "test_no_symphony_dir_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+
+      try do
+        assert AgentRunner.agent_completed_work?(dir) == false
+      after
+        File.rm_rf(dir)
+      end
+    end
+
+    test "returns false when agent-completion.json is invalid JSON" do
+      dir = Path.join(System.tmp_dir!(), "test_invalid_json_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, ".symphony"))
+
+      try do
+        File.write!(Path.join(dir, ".symphony/agent-completion.json"), "not valid json")
+
+        assert AgentRunner.agent_completed_work?(dir) == false
+      after
+        File.rm_rf(dir)
+      end
+    end
+
+    test "returns false when agent-completion.json is missing status field" do
+      dir = Path.join(System.tmp_dir!(), "test_missing_status_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, ".symphony"))
+
+      try do
+        File.write!(
+          Path.join(dir, ".symphony/agent-completion.json"),
+          ~s({"tests_passed": 19, "tests_failed": 0})
+        )
+
+        assert AgentRunner.agent_completed_work?(dir) == false
+      after
+        File.rm_rf(dir)
+      end
+    end
+  end
+
   defp delegate(function_name) do
     AgentRunner.__testing__()[function_name]
   end

@@ -7,15 +7,32 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
     %Issue{
       id: "issue-pr-flow",
       identifier: "PRI-170",
-      title: "Move PR flow into Symphony",
+      title: "Move pr flow into Symphony",
       description: "Test issue",
       state: "In Progress",
       url: "https://linear.example/PRI-170"
     }
   end
 
+  defp setup_completion_report(workspace_path, files \\ ["lib/example.ex", "test/example_test.exs"]) do
+    completion_dir = Path.join(workspace_path, ".symphony")
+    File.mkdir_p!(completion_dir)
+
+    completion_content = Jason.encode!(%{
+      "status" => "ready_for_review",
+      "changed_files" => files,
+      "tests" => [%{"command" => "mix test", "result" => "pass"}]
+    })
+
+    File.write!(Path.join(completion_dir, "agent-completion.json"), completion_content)
+  end
+
   test "commits, pushes, creates PR, and moves tracker state after agent completion" do
     parent = self()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path)
 
     command_runner = fn cmd, args, opts ->
       send(parent, {:command, cmd, args, opts})
@@ -36,7 +53,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
     end
 
     assert {:ok, result} =
-             PrFlow.run(issue(), "D:/tmp/workspace",
+             PrFlow.run(issue(), workspace_path,
                branch_name: "symphony/pri-170-owned-pr",
                command_runner: command_runner,
                tracker_update: tracker_update
@@ -50,6 +67,10 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
 
   test "push failure does not update tracker state" do
     parent = self()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_push_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path, ["lib/example.ex"])
 
     command_runner = fn cmd, args, opts ->
       send(parent, {:command, cmd, args, opts})
@@ -69,7 +90,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
     end
 
     assert {:error, {:git_push_failed, 1, "network failed"}} =
-             PrFlow.run(issue(), "D:/tmp/workspace",
+             PrFlow.run(issue(), workspace_path,
                branch_name: "symphony/pri-170-owned-pr",
                command_runner: command_runner,
                tracker_update: tracker_update
@@ -80,6 +101,10 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
 
   test "PR creation failure keeps branch and commit but does not update tracker state" do
     parent = self()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_pr_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path, ["lib/example.ex"])
 
     command_runner = fn cmd, args, opts ->
       send(parent, {:command, cmd, args, opts})
@@ -100,7 +125,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
     end
 
     assert {:error, {:gh_pr_create_failed, 1, "authentication failed"}} =
-             PrFlow.run(issue(), "D:/tmp/workspace",
+             PrFlow.run(issue(), workspace_path,
                branch_name: "symphony/pri-170-owned-pr",
                command_runner: command_runner,
                tracker_update: tracker_update
@@ -112,6 +137,10 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
 
   test "forbidden changed paths fail closed before staging" do
     parent = self()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_forbidden_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path, ["lib/example.ex"])
 
     command_runner = fn cmd, args, opts ->
       send(parent, {:command, cmd, args, opts})
@@ -122,7 +151,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
     end
 
     assert {:error, {:forbidden_changed_file, ".trae/documents/plan.md"}} =
-             PrFlow.run(issue(), "D:/tmp/workspace",
+             PrFlow.run(issue(), workspace_path,
                branch_name: "symphony/pri-170-owned-pr",
                command_runner: command_runner,
                tracker_update: fn _, _ -> :ok end

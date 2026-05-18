@@ -238,44 +238,65 @@ defmodule SymphonyElixir.AgentRunner do
   defp handle_turn_completion(issue, workspace, _session_pid, _update_recipient, _opts, issue_state_fetcher, turn_number, max_turns, next_turn_fn) do
     Logger.info("Completed agent turn for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns_label(max_turns)}")
 
-    # Phase 3: Check if PR has been created, if so end agent immediately
-    if pr_created?(workspace) do
-      Logger.info("PR created for #{issue_context(issue)}, running quality gate")
-
-      # Phase 4: Run PR quality gate
-      case pr_quality_gate(workspace) do
-        :ok ->
-          Logger.info("PR quality gate passed for #{issue_context(issue)}")
-          :ok
-
-        {:error, reason} ->
-          Logger.warning("PR quality gate failed for #{issue_context(issue)}: #{inspect(reason)}")
-          # Return error to prevent agent from continuing with a failed quality gate
-          {:error, {:pr_quality_gate_failed, reason}}
-      end
+    # Phase 0: Check if agent has already completed its work
+    if agent_completed_work?(workspace) do
+      Logger.info("Agent completed work for #{issue_context(issue)}; stopping follow-up prompts")
+      :ok
     else
-      if workspace_has_changes?(workspace) do
-        Logger.info("Workspace has agent changes for #{issue_context(issue)}; returning control to orchestrator for PR flow")
-        :ok
-      else
-        case continue_with_issue?(issue, issue_state_fetcher) do
-          {:continue, refreshed_issue} when max_turns == -1 or turn_number < max_turns ->
-            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns_label(max_turns)}")
+      # Phase 3: Check if PR has been created, if so end agent immediately
+      if pr_created?(workspace) do
+        Logger.info("PR created for #{issue_context(issue)}, running quality gate")
 
-            next_turn_fn.(refreshed_issue, turn_number + 1)
-
-          {:continue, refreshed_issue} ->
-            Logger.info("Reached max turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-            :ok
-
-          {:done, _refreshed_issue} ->
+        # Phase 4: Run PR quality gate
+        case pr_quality_gate(workspace) do
+          :ok ->
+            Logger.info("PR quality gate passed for #{issue_context(issue)}")
             :ok
 
           {:error, reason} ->
-            {:error, reason}
+            Logger.warning("PR quality gate failed for #{issue_context(issue)}: #{inspect(reason)}")
+            # Return error to prevent agent from continuing with a failed quality gate
+            {:error, {:pr_quality_gate_failed, reason}}
+        end
+      else
+        if workspace_has_changes?(workspace) do
+          Logger.info("Workspace has agent changes for #{issue_context(issue)}; returning control to orchestrator for PR flow")
+          :ok
+        else
+          case continue_with_issue?(issue, issue_state_fetcher) do
+            {:continue, refreshed_issue} when max_turns == -1 or turn_number < max_turns ->
+              Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns_label(max_turns)}")
+
+              next_turn_fn.(refreshed_issue, turn_number + 1)
+
+            {:continue, refreshed_issue} ->
+              Logger.info("Reached max turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+              :ok
+
+            {:done, _refreshed_issue} ->
+              :ok
+
+            {:error, reason} ->
+              {:error, reason}
+          end
         end
       end
     end
+  end
+
+  @doc false
+  def agent_completed_work?(workspace) do
+    completion_path = Path.join(workspace, ".symphony/agent-completion.json")
+
+    with {:ok, content} <- File.read(completion_path),
+         {:ok, data} <- Jason.decode(content),
+         %{"status" => "completed"} <- data do
+      true
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
   end
 
   @doc false
@@ -428,7 +449,11 @@ defmodule SymphonyElixir.AgentRunner do
       send_branch_info: &send_branch_info/3,
       send_worker_runtime_info: &send_worker_runtime_info/4,
       normalize_issue_state: &normalize_issue_state/1,
-      max_turns_label: &max_turns_label/1
+      max_turns_label: &max_turns_label/1,
+      agent_completed_work: &agent_completed_work?/1,
+      pr_created: &pr_created?/1,
+      workspace_has_changes: &workspace_has_changes?/1,
+      pr_quality_gate: &pr_quality_gate/1
     }
   end
 end

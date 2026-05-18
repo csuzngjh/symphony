@@ -991,6 +991,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     Application.delete_env(:symphony_elixir, :server_port_override)
 
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "project")
+
     snapshot_data =
       {:ok,
        %{
@@ -1018,6 +1020,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     Application.put_env(:symphony_elixir, :server_port_override, 4000)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "project")
 
     snapshot_data =
       {:ok,

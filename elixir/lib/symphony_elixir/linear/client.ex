@@ -75,6 +75,9 @@ defmodule SymphonyElixir.Linear.Client do
         team {
           id
         }
+        project {
+          slugId
+        }
         labels {
           nodes {
             name
@@ -163,10 +166,13 @@ defmodule SymphonyElixir.Linear.Client do
       assignee {
         id
       }
-      team {
-        id
-      }
-      labels {
+        team {
+          id
+        }
+        project {
+          slugId
+        }
+        labels {
         nodes {
           name
         }
@@ -654,6 +660,7 @@ defmodule SymphonyElixir.Linear.Client do
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
       team_id: get_in(issue, ["team", "id"]),
+      project_slug: get_in(issue, ["project", "slugId"]),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),

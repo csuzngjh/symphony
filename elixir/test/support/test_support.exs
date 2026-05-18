@@ -201,7 +201,8 @@ defmodule SymphonyElixir.TestSupport do
           tracker_kind: "linear",
           tracker_endpoint: "https://api.linear.app/graphql",
           tracker_api_token: "token",
-          tracker_project_slug: "project",
+          tracker_project_slug: nil,
+          tracker_allow_unscoped_project_polling: false,
           tracker_assignee: nil,
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
@@ -246,6 +247,7 @@ defmodule SymphonyElixir.TestSupport do
     tracker_endpoint = Keyword.get(config, :tracker_endpoint)
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
+    tracker_allow_unscoped_project_polling = Keyword.get(config, :tracker_allow_unscoped_project_polling)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_issue_identifiers = Keyword.get(config, :tracker_issue_identifiers)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
@@ -293,6 +295,7 @@ defmodule SymphonyElixir.TestSupport do
         "  endpoint: #{yaml_value(tracker_endpoint)}",
         "  api_key: #{yaml_value(tracker_api_token)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",
+        "  allow_unscoped_project_polling: #{yaml_value(tracker_allow_unscoped_project_polling)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  issue_identifiers: #{yaml_value(tracker_issue_identifiers)}",
         "  active_states: #{yaml_value(tracker_active_states)}",

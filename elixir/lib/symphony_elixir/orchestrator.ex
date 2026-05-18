@@ -884,6 +884,7 @@ defmodule SymphonyElixir.Orchestrator do
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
+      project_slug_matches?(issue) and
       !auto_review_issue_state?(issue.state) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       required_label_passed?(issue) and
@@ -896,6 +897,29 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp project_slug_matches?(%Issue{project_slug: issue_slug, identifier: identifier}) do
+    case Config.settings!().tracker.project_slug do
+      nil ->
+        true
+
+      config_slug when is_binary(config_slug) and config_slug != "" ->
+        case Config.settings!().tracker.allow_unscoped_project_polling do
+          true when is_nil(issue_slug) -> true
+          _ ->
+            matched = is_binary(issue_slug) and String.downcase(issue_slug) == String.downcase(config_slug)
+
+            unless matched do
+              Logger.debug("Issue rejected: project_slug mismatch for #{identifier} (issue_slug=#{inspect(issue_slug)}, config_slug=#{inspect(config_slug)})")
+            end
+
+            matched
+        end
+
+      _ ->
+        true
+    end
+  end
 
   defp required_label_passed?(%Issue{labels: labels}) do
     case Config.settings!().tracker.required_label do
