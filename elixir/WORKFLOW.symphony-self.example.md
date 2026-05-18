@@ -94,29 +94,55 @@ No description provided.
 
 Instructions:
 
+## Branch and PR Flow
+
+You are working on branch `{{ branch_name }}`. Do NOT create a new branch.
+
+When your work is complete and tests pass:
+1. Leave your final file changes in the workspace.
+2. Do NOT run `git push`.
+3. Do NOT run `gh pr create`.
+4. Do NOT update Linear status.
+5. Write `.symphony/agent-completion.json` exactly once with the completion report contract below.
+6. Symphony will stage allowed files, commit, push, create the PR, and move Linear to In Review after validating the report.
+
+Completion report contract:
+
+```json
+{
+  "status": "ready_for_review",
+  "changed_files": ["path/to/file.ext"],
+  "tests": [{"command": "exact command", "result": "passed"}],
+  "risks": ["known residual risk, or none"],
+  "notes": "short implementation summary"
+}
+```
+
+- Use `status: "ready_for_review"` only when code and tests are ready for PR.
+- Use `status: "blocked"` when you cannot complete the issue; include the blocker in `notes`.
+- `changed_files` must list only product/source/test/doc files you intentionally changed. Do not list `.symphony/agent-completion.json`.
+- At least one test command is required. If no test can be run, write the reason in `tests[0].result`.
+
 ## Workflow
 
-1. Determine the issue's current state and follow the state transitions below
-2. From `Todo`: immediately move to `In Progress` → create/find workpad comment
-3. Write a plan in the workpad first:
+1. Determine the issue's current state, but do not change Linear status yourself.
+2. Write a short plan in the workpad first:
    - What needs to be done
    - How to verify
    - What the impact is
-4. Start implementing (code, tests, etc.)
-5. After each milestone, update the workpad
-6. When complete:
-   - Create a PR, link it to the issue
-   - Move to `Human Review` for review
+3. Start implementing with focused changes and tests.
+4. After each milestone, update the workpad.
+5. When complete, write the completion report and stop. Symphony owns commit, push, PR creation, and Linear transition.
 
 ### State transitions
-- `Todo` → `In Progress`: start working
-- `In Progress` → implementing
-- `Human Review` → done, waiting for review
-- `Merging` → review passed, agent merges
+- `Todo` → Symphony starts work
+- `In Progress` → implementation is underway
+- `In Review` / `Human Review` → done, waiting for review
+- `Merging` → review passed, agent may merge if explicitly dispatched for merge work
 - `Rework` → needs changes
 - `Done` → complete
 
 ### Principles
-- Work autonomously, don't ask for next steps
-- If blocked (missing permissions/secrets), write clearly in workpad
-- Only move to `Human Review` when truly done
+- Work autonomously, don't ask for next steps.
+- If blocked by missing permissions/secrets, write `status: "blocked"` in `.symphony/agent-completion.json` and explain clearly in `notes`.
+- Do not push, create PRs, or update Linear status.

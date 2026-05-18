@@ -118,12 +118,31 @@ defmodule SymphonyElixir.ControlPlane.CompletionReportTest do
 
       assert {:error, {:invalid_status, "unknown"}} = CompletionReport.validate(report, opts)
     end
+
+    test "status=completed is rejected because agent completion uses ready_for_review" do
+      report = %{
+        "status" => "completed",
+        "changed_files" => ["lib/a.ex"],
+        "tests" => [%{"command" => "mix test", "result" => "passed"}]
+      }
+
+      opts = [changed_files: ["lib/a.ex"]]
+
+      assert {:error, {:invalid_status, "completed"}} = CompletionReport.validate(report, opts)
+    end
   end
 
   describe "validate_changed_files/2" do
     test "matching" do
       report = %{"changed_files" => ["lib/a.ex", "test/b_test.exs"]}
       opts = [changed_files: ["lib/a.ex", "test/b_test.exs"]]
+
+      assert :ok = CompletionReport.validate_changed_files(report, opts)
+    end
+
+    test "ignores the control-plane completion file from git changed files" do
+      report = %{"changed_files" => ["lib/a.ex"]}
+      opts = [changed_files: ["lib/a.ex", ".symphony/agent-completion.json"]]
 
       assert :ok = CompletionReport.validate_changed_files(report, opts)
     end

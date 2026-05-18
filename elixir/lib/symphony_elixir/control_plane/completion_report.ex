@@ -6,6 +6,7 @@ defmodule SymphonyElixir.ControlPlane.CompletionReport do
 
   @completion_dir ".symphony"
   @completion_file "agent-completion.json"
+  @control_plane_changed_files [Path.join(@completion_dir, @completion_file)]
 
   @spec read(Path.t()) :: {:ok, map()} | {:error, :missing_completion_report} | {:error, :invalid_completion_report}
   def read(workspace_path) when is_binary(workspace_path) do
@@ -61,7 +62,7 @@ defmodule SymphonyElixir.ControlPlane.CompletionReport do
     status = Map.get(report, "status")
 
     cond do
-      status in ["ready_for_review", "completed"] -> :ok
+      status == "ready_for_review" -> :ok
       status == "blocked" -> {:error, {:agent_blocked, report}}
       true -> {:error, {:invalid_status, status}}
     end
@@ -82,7 +83,11 @@ defmodule SymphonyElixir.ControlPlane.CompletionReport do
 
   defp compare_changed_files(report, git_files) do
     report_files = report |> Map.get("changed_files", []) |> MapSet.new()
-    actual_files = MapSet.new(git_files)
+
+    actual_files =
+      git_files
+      |> Enum.reject(&control_plane_changed_file?/1)
+      |> MapSet.new()
 
     if MapSet.equal?(report_files, actual_files) do
       :ok
@@ -96,4 +101,15 @@ defmodule SymphonyElixir.ControlPlane.CompletionReport do
   end
 
   defp valid_test_entry?(_), do: false
+
+  defp control_plane_changed_file?(path) when is_binary(path) do
+    normalized =
+      path
+      |> String.replace("\\", "/")
+      |> String.trim_leading("/")
+
+    normalized in @control_plane_changed_files
+  end
+
+  defp control_plane_changed_file?(_), do: false
 end

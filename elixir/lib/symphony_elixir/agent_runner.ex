@@ -290,7 +290,7 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, content} <- File.read(completion_path),
          {:ok, data} <- Jason.decode(content),
-         %{"status" => "completed"} <- data do
+         %{"status" => "ready_for_review"} <- data do
       true
     else
       _ -> false
