@@ -122,6 +122,48 @@ defmodule SymphonyElixir.ControlPlane.PrFlowTest do
     refute_received {:command, "git", ["add", "--", "lib/example.ex", ".symphony/agent-completion.json"], _}
   end
 
+  test "does not stage an untracked control-plane completion directory" do
+    parent = self()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_completion_dir_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path, ["lib/example.ex"])
+
+    command_runner = fn cmd, args, opts ->
+      send(parent, {:command, cmd, args, opts})
+
+      case {cmd, args} do
+        {"git", ["status", "--porcelain"]} ->
+          {" M lib/example.ex\n?? .symphony/\n", 0}
+
+        {"git", ["add", "--", "lib/example.ex"]} ->
+          {"", 0}
+
+        {"git", ["commit", "-m", _message]} ->
+          {"[branch abc] commit", 0}
+
+        {"git", ["rev-parse", "HEAD"]} ->
+          {"abc123\n", 0}
+
+        {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} ->
+          {"pushed", 0}
+
+        {"gh", ["pr", "create" | _rest]} ->
+          {"https://github.com/acme/repo/pull/123\n", 0}
+      end
+    end
+
+    assert {:ok, result} =
+             PrFlow.run(issue(), workspace_path,
+               branch_name: "symphony/pri-170-owned-pr",
+               command_runner: command_runner,
+               tracker_update: fn _, _ -> :ok end
+             )
+
+    assert result.changed_files == ["lib/example.ex"]
+    assert_received {:command, "git", ["add", "--", "lib/example.ex"], _}
+  end
+
   test "push failure does not update tracker state" do
     parent = self()
     workspace_path = Path.join(System.tmp_dir!(), "symphony_pr_flow_push_test")

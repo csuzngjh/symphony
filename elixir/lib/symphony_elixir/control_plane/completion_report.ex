@@ -108,7 +108,7 @@ defmodule SymphonyElixir.ControlPlane.CompletionReport do
       |> String.replace("\\", "/")
       |> String.trim_leading("/")
 
-    normalized in @control_plane_changed_files
+    normalized in @control_plane_changed_files or normalized == "#{@completion_dir}/"
   end
 
   defp control_plane_changed_file?(_), do: false

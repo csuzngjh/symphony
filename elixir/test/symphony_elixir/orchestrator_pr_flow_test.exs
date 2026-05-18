@@ -5,11 +5,12 @@ defmodule SymphonyElixir.OrchestratorPrFlowTest do
     completion_dir = Path.join(workspace_path, ".symphony")
     File.mkdir_p!(completion_dir)
 
-    completion_content = Jason.encode!(%{
-      "status" => "ready_for_review",
-      "changed_files" => files,
-      "tests" => [%{"command" => "mix test", "result" => "pass"}]
-    })
+    completion_content =
+      Jason.encode!(%{
+        "status" => "ready_for_review",
+        "changed_files" => files,
+        "tests" => [%{"command" => "mix test", "result" => "pass"}]
+      })
 
     File.write!(Path.join(completion_dir, "agent-completion.json"), completion_content)
   end
@@ -38,6 +39,7 @@ defmodule SymphonyElixir.OrchestratorPrFlowTest do
     end
 
     Application.put_env(:symphony_elixir, :pr_flow_command_runner, command_runner)
+
     Application.put_env(:symphony_elixir, :pr_flow_tracker_update, fn tracker_issue_id, state_name ->
       send(parent, {:tracker_update, tracker_issue_id, state_name})
       :ok
@@ -70,6 +72,74 @@ defmodule SymphonyElixir.OrchestratorPrFlowTest do
     assert snapshot.blocked == []
   end
 
+  test "completion report finalizes hung agent process without waiting for normal exit" do
+    parent = self()
+    issue_id = "issue-control-plane-hung-agent"
+    ref = make_ref()
+    workspace_path = Path.join(System.tmp_dir!(), "symphony_orch_pr_flow_hung_agent_test")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    setup_completion_report(workspace_path)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        after
+          60_000 -> :ok
+        end
+      end)
+
+    command_runner = fn cmd, args, opts ->
+      send(parent, {:command, cmd, args, opts})
+
+      case {cmd, args} do
+        {"git", ["status", "--porcelain"]} -> {" M lib/example.ex\n", 0}
+        {"git", ["add", "--", "lib/example.ex"]} -> {"", 0}
+        {"git", ["commit", "-m", _message]} -> {"committed", 0}
+        {"git", ["rev-parse", "HEAD"]} -> {"abc123\n", 0}
+        {"git", ["push", "-u", "origin", "symphony/pri-170-owned-pr"]} -> {"pushed", 0}
+        {"gh", ["pr", "create" | _rest]} -> {"https://github.com/acme/repo/pull/170\n", 0}
+      end
+    end
+
+    Application.put_env(:symphony_elixir, :pr_flow_command_runner, command_runner)
+
+    Application.put_env(:symphony_elixir, :pr_flow_tracker_update, fn tracker_issue_id, state_name ->
+      send(parent, {:tracker_update, tracker_issue_id, state_name})
+      :ok
+    end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid), do: Process.exit(worker_pid, :kill)
+      Application.delete_env(:symphony_elixir, :pr_flow_command_runner)
+      Application.delete_env(:symphony_elixir, :pr_flow_tracker_update)
+    end)
+
+    {:ok, pid} = Orchestrator.start_link(name: Module.concat(__MODULE__, :HungAgentCompletionOrchestrator))
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    put_running_entry(pid, issue_id, ref, worker_pid, %{
+      branch_name: "symphony/pri-170-owned-pr",
+      workspace_path: workspace_path,
+      phase: "prompt_sent"
+    })
+
+    assert :ok = GenServer.call(pid, :run_reconcile)
+
+    assert_receive {:tracker_update, ^issue_id, "In Review"}, 1_000
+    assert_receive {:command, "gh", ["pr", "create" | _], _}, 1_000
+
+    refute Process.alive?(worker_pid)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.running == []
+    assert snapshot.blocked == []
+  end
+
   test "push failure blocks the issue and does not update tracker state" do
     parent = self()
     issue_id = "issue-control-plane-push-fail"
@@ -93,6 +163,7 @@ defmodule SymphonyElixir.OrchestratorPrFlowTest do
     end
 
     Application.put_env(:symphony_elixir, :pr_flow_command_runner, command_runner)
+
     Application.put_env(:symphony_elixir, :pr_flow_tracker_update, fn tracker_issue_id, state_name ->
       send(parent, {:tracker_update, tracker_issue_id, state_name})
       :ok

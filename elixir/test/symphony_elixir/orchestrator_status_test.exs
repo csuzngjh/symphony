@@ -798,6 +798,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator triggers an immediate poll cycle shortly after startup" do
     write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
       tracker_api_token: nil,
       poll_interval_ms: 5_000
     )
@@ -2732,7 +2733,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
-      alive_pid = spawn(fn -> receive do :done -> :ok end end)
+      alive_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
       ref = make_ref()
       started_at = DateTime.utc_now()
       initial_state = :sys.get_state(pid)
@@ -2787,7 +2794,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
-      alive_pid = spawn(fn -> receive do :done -> :ok end end)
+      alive_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
       ref = make_ref()
       started_at = DateTime.utc_now()
       initial_state = :sys.get_state(pid)
@@ -3030,7 +3043,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
-      alive_pid = spawn(fn -> receive do :done -> :ok end end)
+      alive_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
       ref = make_ref()
       now = DateTime.utc_now()
       stale_started_at = DateTime.add(DateTime.utc_now(), -2, :second)
@@ -3286,6 +3305,91 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       assert entry.progress_source == "acpx_session_stream"
       assert entry.stream_bytes_read > 0
     end
+
+    test "session stream json-rpc error blocks the issue instead of leaving it running" do
+      issue_id = "issue-stream-error"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-STREAM-ERR",
+        title: "Stream error test",
+        description: "Test",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-STREAM-ERR"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :StreamErrorOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
+      initial_state = :sys.get_state(pid)
+      started_at = DateTime.utc_now()
+
+      dir = System.tmp_dir!()
+      record_id = "test-stream-error-#{:erlang.unique_integer([:positive])}"
+      stream_path = Path.join(dir, "#{record_id}.stream.ndjson")
+
+      on_exit(fn ->
+        File.rm(stream_path)
+        if Process.alive?(worker_pid), do: send(worker_pid, :done)
+      end)
+
+      error_line = ~S|{"jsonrpc":"2.0","id":4,"error":{"code":-32603,"message":"Internal error: API Error: Request rejected (429) rate limit"}}|
+      File.write!(stream_path, error_line <> "\n")
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        started_at: started_at,
+        progress_source: "acpx_session_stream",
+        last_raw_event_at: DateTime.utc_now(),
+        last_raw_preview: "previous event",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: DateTime.utc_now(),
+        consecutive_parser_errors: 0,
+        acpx_record_id: record_id,
+        stream_bytes_read: 0,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0
+      }
+
+      state_with_issue =
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+        |> Map.put(:acpx_session_root, dir)
+
+      :sys.replace_state(pid, fn _ -> state_with_issue end)
+
+      GenServer.call(pid, :run_reconcile)
+
+      state = :sys.get_state(pid)
+      refute Map.has_key?(state.running, issue_id)
+      assert state.blocked[issue_id].reason == "agent_rate_limited"
+      assert state.blocked[issue_id].last_error =~ "429"
+    end
   end
 
   describe "deterministic infra failure blocking" do
@@ -3302,7 +3406,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
-      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
       ref = make_ref()
       started_at = DateTime.utc_now()
       initial_state = :sys.get_state(pid)
@@ -3353,7 +3463,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
-      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
       ref = make_ref()
       started_at = DateTime.utc_now()
       initial_state = :sys.get_state(pid)
@@ -3403,7 +3519,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
-      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
       ref = make_ref()
       started_at = DateTime.utc_now()
       initial_state = :sys.get_state(pid)
@@ -3451,7 +3573,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
-      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
       ref = make_ref()
       started_at = DateTime.utc_now()
       initial_state = :sys.get_state(pid)
@@ -3498,7 +3626,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
-      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
       ref = make_ref()
       started_at = DateTime.utc_now()
       initial_state = :sys.get_state(pid)
@@ -3549,7 +3683,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
-      worker_pid = spawn(fn -> receive do :done -> :ok end end)
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
       ref = make_ref()
       started_at = DateTime.utc_now()
       initial_state = :sys.get_state(pid)
@@ -3674,6 +3814,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       assert snapshot_entry.session_id == "sess-lifecycle"
       assert snapshot_entry.acpx_record_id == "rec-lifecycle"
       assert snapshot_entry.branch_name == "symphony/mt-lifecycle"
+
       assert Enum.map(snapshot_entry.phase_history, & &1.phase) == [
                "claimed",
                "workspace_created",
@@ -3683,9 +3824,274 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                "agent_running",
                "agent_completed"
              ]
+
       assert length(snapshot_entry.phase_history) <= 10
       assert snapshot_entry.phase_started_at != nil
       assert snapshot_entry.last_transition_at != nil
+    end
+
+    test "stale async poll results do not overwrite live attempt phase metadata" do
+      issue_id = "issue-stale-poll-lifecycle"
+      started_at = DateTime.utc_now()
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-STALE-POLL",
+        title: "Stale poll lifecycle test",
+        description: "Verify async poll merge preserves live attempt state",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-STALE-POLL"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :StalePollLifecycleOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        acpx_record_id: nil,
+        phase: "claimed",
+        phase_started_at: started_at,
+        last_transition_at: started_at,
+        phase_history: [%{phase: "claimed", transitioned_at: started_at, reason: nil}],
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0,
+        branch_name: nil
+      }
+
+      initial_state = :sys.get_state(pid)
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      stale_poll_state =
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            Map.merge(running_entry, %{
+              phase: "workspace_created",
+              workspace_path: "/tmp/ws",
+              phase_history: [
+                %{phase: "claimed", transitioned_at: started_at, reason: nil},
+                %{phase: "workspace_created", transitioned_at: DateTime.utc_now(), reason: nil}
+              ]
+            })
+        })
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+
+      send(pid, {:worker_runtime_info, issue_id, %{worker_host: "local", workspace_path: "/tmp/ws"}})
+      send(pid, {:agent_worker_update, issue_id, %{event: :branch_prepared, branch_name: "symphony/mt-stale-poll", timestamp: DateTime.utc_now()}})
+
+      send(
+        pid,
+        {:agent_worker_update, issue_id,
+         %{
+           event: :session_ready,
+           phase: "session_ready",
+           session_id: "sess-stale-poll",
+           acpx_record_id: "rec-stale-poll",
+           session_name: "MT-STALE-POLL",
+           timestamp: DateTime.utc_now()
+         }}
+      )
+
+      send(pid, {:poll_cycle_completed, make_ref(), stale_poll_state})
+      Process.sleep(50)
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert %{running: [snapshot_entry]} = snapshot
+
+      assert snapshot_entry.phase == "session_ready"
+      assert snapshot_entry.session_id == "sess-stale-poll"
+      assert snapshot_entry.acpx_record_id == "rec-stale-poll"
+      assert snapshot_entry.branch_name == "symphony/mt-stale-poll"
+
+      assert Enum.map(snapshot_entry.phase_history, & &1.phase) == [
+               "claimed",
+               "workspace_created",
+               "branch_prepared",
+               "session_ready"
+             ]
+    end
+
+    test "worker updates arriving before async poll result are buffered and applied" do
+      issue_id = "issue-early-worker-updates"
+      started_at = DateTime.utc_now()
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-EARLY-UPDATES",
+        title: "Early worker updates test",
+        description: "Verify worker updates are not dropped before async poll installs running entry",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-EARLY-UPDATES"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :EarlyWorkerUpdatesOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        acpx_record_id: nil,
+        phase: "claimed",
+        phase_started_at: started_at,
+        last_transition_at: started_at,
+        phase_history: [%{phase: "claimed", transitioned_at: started_at, reason: nil}],
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0,
+        branch_name: nil
+      }
+
+      send(pid, {:worker_runtime_info, issue_id, %{worker_host: "local", workspace_path: "/tmp/early-ws"}})
+      send(pid, {:agent_worker_update, issue_id, %{event: :branch_prepared, branch_name: "symphony/mt-early", timestamp: DateTime.utc_now()}})
+
+      send(
+        pid,
+        {:agent_worker_update, issue_id,
+         %{
+           event: :session_ready,
+           phase: "session_ready",
+           session_id: "sess-early",
+           acpx_record_id: "rec-early",
+           session_name: "MT-EARLY-UPDATES",
+           timestamp: DateTime.utc_now()
+         }}
+      )
+
+      poll_state =
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+
+      send(pid, {:poll_cycle_completed, make_ref(), poll_state})
+      Process.sleep(50)
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert %{running: [snapshot_entry]} = snapshot
+
+      assert snapshot_entry.workspace_path == "/tmp/early-ws"
+      assert snapshot_entry.branch_name == "symphony/mt-early"
+      assert snapshot_entry.session_id == "sess-early"
+      assert snapshot_entry.acpx_record_id == "rec-early"
+      assert snapshot_entry.phase == "session_ready"
+    end
+
+    test "stale async poll results do not resurrect removed running entries" do
+      issue_id = "issue-stale-poll-removed-running"
+      started_at = DateTime.utc_now()
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-STALE-REMOVED",
+        title: "Stale poll removed running test",
+        description: "Verify stale async poll output cannot resurrect a removed running entry",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-STALE-REMOVED"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :StalePollRemovedRunningOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      stale_running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: nil,
+        acpx_record_id: nil,
+        phase: "claimed",
+        phase_started_at: started_at,
+        last_transition_at: started_at,
+        phase_history: [%{phase: "claimed", transitioned_at: started_at, reason: nil}],
+        turn_count: 0,
+        last_agent_message: nil,
+        last_agent_timestamp: nil,
+        last_agent_event: nil,
+        last_raw_event_at: nil,
+        started_at: started_at,
+        progress_source: "none",
+        last_workspace_activity_at: nil,
+        last_process_seen_at: nil,
+        agent_input_tokens: 0,
+        agent_output_tokens: 0,
+        agent_total_tokens: 0,
+        agent_cached_read_tokens: 0,
+        agent_cached_write_tokens: 0,
+        branch_name: nil
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      stale_poll_state =
+        initial_state
+        |> Map.put(:running, %{issue_id => stale_running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+
+      send(pid, {:poll_cycle_completed, make_ref(), stale_poll_state})
+      Process.sleep(50)
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert snapshot.running == []
     end
 
     test "illegal lifecycle jumps fail loud without mutating phase" do

@@ -130,7 +130,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
       |> normalize_git_path()
       |> String.trim_leading("/")
 
-    normalized in @control_plane_changed_files
+    normalized in @control_plane_changed_files or normalized == ".symphony/"
   end
 
   defp control_plane_changed_file?(_), do: false
