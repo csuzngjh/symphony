@@ -78,7 +78,7 @@ defmodule SymphonyElixir.AgentRunner do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
     agent = agent_name_from_config()
-    session_name = "issue-#{issue.id}"
+    session_name = session_name_for_attempt(issue)
 
     send_phase_update(update_recipient, issue, "starting_session", session_name)
 
@@ -114,6 +114,10 @@ defmodule SymphonyElixir.AgentRunner do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp session_name_for_attempt(%Issue{id: issue_id}) do
+    "issue-#{issue_id}-#{System.system_time(:millisecond)}-#{System.unique_integer([:positive])}"
   end
 
   defp send_phase_update(nil, _issue, _phase, _session_name), do: :ok

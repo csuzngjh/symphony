@@ -22,6 +22,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
           latest_preview: String.t() | nil,
           latest_message: String.t() | nil,
           latest_tool_preview: String.t() | nil,
+          latest_error: map() | nil,
           token_usage: map(),
           parser_errors: non_neg_integer(),
           stream_path: String.t(),
@@ -121,6 +122,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
     preview = bounded_preview(text)
 
     acc
+    |> Map.put(:latest_error, nil)
     |> Map.put(:latest_event_at, DateTime.utc_now())
     |> Map.put(:latest_preview, preview || acc.latest_preview)
     |> Map.put(:latest_message, text || acc.latest_message)
@@ -131,6 +133,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
     preview = bounded_preview(text)
 
     acc
+    |> Map.put(:latest_error, nil)
     |> Map.put(:latest_event_at, DateTime.utc_now())
     |> Map.put(:latest_preview, preview || acc.latest_preview)
   end
@@ -140,6 +143,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
     preview = bounded_preview("tool_call: #{title}")
 
     acc
+    |> Map.put(:latest_error, nil)
     |> Map.put(:latest_event_at, DateTime.utc_now())
     |> Map.put(:latest_preview, preview || acc.latest_preview)
     |> Map.put(:latest_tool_preview, preview || acc.latest_tool_preview)
@@ -153,6 +157,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
     preview = bounded_preview("tool_update(#{kind}): #{title}#{loc_preview}")
 
     acc
+    |> Map.put(:latest_error, nil)
     |> Map.put(:latest_event_at, DateTime.utc_now())
     |> Map.put(:latest_preview, preview || acc.latest_preview)
     |> Map.put(:latest_tool_preview, preview || acc.latest_tool_preview)
@@ -162,6 +167,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
     preview = bounded_preview(inspect(data))
 
     acc
+    |> Map.put(:latest_error, nil)
     |> Map.put(:latest_event_at, DateTime.utc_now())
     |> Map.put(:latest_preview, preview || acc.latest_preview)
   end
@@ -170,6 +176,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
     usage = extract_usage(data)
 
     acc
+    |> Map.put(:latest_error, nil)
     |> Map.put(:latest_event_at, DateTime.utc_now())
     |> Map.put(:token_usage, merge_token_usage(acc.token_usage, usage))
     |> Map.put(:latest_preview, usage_preview(usage) || acc.latest_preview)
@@ -179,25 +186,44 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
     usage = extract_usage(data["usage"] || %{})
 
     acc
+    |> Map.put(:latest_error, nil)
     |> Map.put(:latest_event_at, DateTime.utc_now())
     |> Map.put(:token_usage, merge_token_usage(acc.token_usage, usage))
   end
 
   defp merge_event(acc, :session_update, _data) do
-    Map.put(acc, :latest_event_at, DateTime.utc_now())
+    acc
+    |> Map.put(:latest_error, nil)
+    |> Map.put(:latest_event_at, DateTime.utc_now())
   end
 
   defp merge_event(acc, :error, data) do
     preview = bounded_preview(data["message"] || inspect(data))
 
-    acc
-    |> Map.put(:latest_event_at, DateTime.utc_now())
-    |> Map.put(:latest_preview, preview || acc.latest_preview)
+    if benign_session_load_miss?(data) do
+      acc
+      |> Map.put(:latest_event_at, DateTime.utc_now())
+      |> Map.put(:latest_preview, preview || acc.latest_preview)
+    else
+      acc
+      |> Map.put(:latest_event_at, DateTime.utc_now())
+      |> Map.put(:latest_preview, preview || acc.latest_preview)
+      |> Map.put(:latest_error, data)
+    end
   end
 
   defp merge_event(acc, _type, _data) do
     acc
+    |> Map.put(:latest_error, nil)
   end
+
+  defp benign_session_load_miss?(data) when is_map(data) do
+    message = data["message"] |> to_string()
+    code = data["code"]
+    code == -32002 and String.starts_with?(message, "Resource not found:")
+  end
+
+  defp benign_session_load_miss?(_data), do: false
 
   defp extract_text(data) do
     cond do
@@ -255,6 +281,7 @@ defmodule SymphonyElixir.AgentRunner.AcpxSessionStream do
       latest_preview: nil,
       latest_message: nil,
       latest_tool_preview: nil,
+      latest_error: nil,
       token_usage: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, cached_read_tokens: 0, cached_write_tokens: 0},
       parser_errors: 0,
       stream_path: path,

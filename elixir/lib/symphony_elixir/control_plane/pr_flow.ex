@@ -11,6 +11,8 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Tracker
 
+  require Logger
+
   @forbidden_path_prefixes [".trae/", ".planning/", "tmp-", "test-output"]
   @control_plane_changed_files [".symphony/agent-completion.json"]
 
@@ -21,7 +23,8 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
           changed_files: [String.t()],
           branch_name: String.t(),
           commit_sha: String.t() | nil,
-          pr_url: String.t()
+          pr_url: String.t(),
+          tracker_updated: boolean()
         }
 
   @spec run(Issue.t(), Path.t(), keyword()) :: {:ok, success()} | {:error, term()}
@@ -40,14 +43,22 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
          :ok <- git_commit(workspace_path, issue, command_runner),
          {:ok, commit_sha} <- git_rev_parse(workspace_path, command_runner),
          :ok <- git_push(workspace_path, branch_name, command_runner),
-         {:ok, pr_url} <- gh_pr_create(workspace_path, issue, branch_name, base_branch, command_runner),
-         :ok <- tracker_update.(issue.id, "In Review") do
+         {:ok, pr_url} <- resolve_pr_url(workspace_path, issue, branch_name, base_branch, command_runner) do
+      tracker_updated =
+        case safe_tracker_update(tracker_update, issue.id, "In Review") do
+          :ok -> true
+          {:error, reason} ->
+            Logger.warning("tracker_update failed for issue #{issue.id}: #{inspect(reason)}")
+            false
+        end
+
       {:ok,
        %{
          changed_files: changed_files,
          branch_name: branch_name,
          commit_sha: commit_sha,
-         pr_url: pr_url
+         pr_url: pr_url,
+         tracker_updated: tracker_updated
        }}
     else
       {:error, _reason} = error -> error
@@ -130,7 +141,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
       |> normalize_git_path()
       |> String.trim_leading("/")
 
-    normalized in @control_plane_changed_files
+    normalized in @control_plane_changed_files or normalized == ".symphony/"
   end
 
   defp control_plane_changed_file?(_), do: false
@@ -192,6 +203,52 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
       nil -> {:error, {:gh_pr_create_missing_url, String.trim(output)}}
       pr_url -> {:ok, pr_url}
     end
+  end
+
+  @spec gh_pr_list_open(Path.t(), String.t(), command_runner()) ::
+          {:ok, String.t()} | :not_found | {:error, term()}
+  defp gh_pr_list_open(workspace_path, branch_name, command_runner) do
+    case command_runner.("gh", ["pr", "list", "--head", branch_name, "--state", "open", "--json", "url"],
+           cd: workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        case parse_pr_list_urls(output) do
+          [] -> :not_found
+          [url | _] -> {:ok, url}
+        end
+
+      {output, status} ->
+        {:error, {:gh_pr_list_failed, status, String.trim(output)}}
+    end
+  end
+
+  defp resolve_pr_url(workspace_path, issue, branch_name, base_branch, command_runner) do
+    case gh_pr_list_open(workspace_path, branch_name, command_runner) do
+      {:ok, existing_pr_url} ->
+        Logger.info("PR already exists for branch #{branch_name}: #{existing_pr_url}")
+        {:ok, existing_pr_url}
+
+      :not_found ->
+        gh_pr_create(workspace_path, issue, branch_name, base_branch, command_runner)
+
+      {:error, _reason} ->
+        gh_pr_create(workspace_path, issue, branch_name, base_branch, command_runner)
+    end
+  end
+
+  defp parse_pr_list_urls(output) when is_binary(output) do
+    case Jason.decode(output) do
+      {:ok, [%{"url" => url} | _]} -> [url]
+      {:ok, []} -> []
+      _ -> []
+    end
+  end
+
+  defp safe_tracker_update(tracker_update, issue_id, state_name) do
+    tracker_update.(issue_id, state_name)
+  rescue
+    e -> {:error, {:tracker_update_exception, Exception.message(e)}}
   end
 
   defp commit_message(%Issue{identifier: identifier, title: title}) do

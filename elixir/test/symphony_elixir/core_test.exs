@@ -109,6 +109,9 @@ defmodule SymphonyElixir.CoreTest do
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
     assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/csuzngjh/principles ."
+    refute Map.get(hooks, "after_create") =~ "pnpm install"
+    refute Map.get(hooks, "after_create") =~ "npm install"
+    refute Map.get(hooks, "after_create") =~ "npm ci"
 
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())

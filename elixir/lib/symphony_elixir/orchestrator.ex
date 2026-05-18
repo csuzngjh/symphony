@@ -15,7 +15,10 @@ defmodule SymphonyElixir.Orchestrator do
   @default_continuation_retry_delay_ms 300_000
   @failure_retry_base_ms 10_000
   @max_completed_set_size 1_000
-  @blocked_ttl_seconds 86_400
+  @blocked_ttl_by_reason %{
+    "agent_rate_limited" => 21_600,
+    :default => 86_400
+  }
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @attempt_shutdown_timeout_ms 15_000
@@ -44,6 +47,7 @@ defmodule SymphonyElixir.Orchestrator do
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
+      pending_worker_updates: %{},
       retry_attempts: %{},
       agent_totals: nil,
       agent_rate_limits: nil,
@@ -124,7 +128,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     # Offload slow I/O (Linear fetch, workspace scan, git check) to a Task
     # so the GenServer mailbox remains responsive for snapshot/status calls.
-    Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+    start_orchestrator_task(fn ->
       poll_result =
         try do
           do_poll_cycle(state, me)
@@ -267,14 +271,10 @@ defmodule SymphonyElixir.Orchestrator do
       when is_binary(issue_id) and is_map(runtime_info) do
     case Map.get(running, issue_id) do
       nil ->
-        {:noreply, state}
+        {:noreply, buffer_pending_worker_update(state, issue_id, {:worker_runtime_info, runtime_info})}
 
       running_entry ->
-        updated_running_entry =
-          running_entry
-          |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
-          |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
-          |> apply_attempt_phase("workspace_created")
+        updated_running_entry = apply_worker_runtime_info_update(running_entry, runtime_info)
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -287,7 +287,7 @@ defmodule SymphonyElixir.Orchestrator do
       ) do
     case Map.get(running, issue_id) do
       nil ->
-        {:noreply, state}
+        {:noreply, buffer_pending_worker_update(state, issue_id, {:agent_worker_update, update})}
 
       running_entry ->
         {updated_running_entry, token_delta} = integrate_agent_update(running_entry, update)
@@ -395,7 +395,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_poll_cycle(%State{} = state, orchestrator_pid) do
     # Validate config first - fail fast if missing required settings
     with :ok <- Config.validate!() do
-      state = reconcile_running_issues(state)
+      state = reconcile_running_issues(state, orchestrator_pid)
 
       if available_slots(state) > 0 do
         case Tracker.fetch_candidate_issues() do
@@ -438,12 +438,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp apply_poll_result(state, %State{} = new_state) do
+    blocked = Map.merge(new_state.blocked, state.blocked)
+    running = merge_poll_running_entries(state, new_state)
+    {running, pending_worker_updates} = apply_pending_worker_updates(running, state.pending_worker_updates)
+
     %{
       state
-      | running: new_state.running,
-        claimed: new_state.claimed,
+      | running: running,
+        claimed: merge_poll_claimed(new_state.claimed, running, blocked),
+        pending_worker_updates: pending_worker_updates,
         retry_attempts: new_state.retry_attempts,
-        blocked: new_state.blocked,
+        blocked: blocked,
         agent_totals: new_state.agent_totals,
         reviews: new_state.reviews
     }
@@ -453,8 +458,116 @@ defmodule SymphonyElixir.Orchestrator do
     state
   end
 
-  defp reconcile_running_issues(%State{} = state) do
-    state = reconcile_stalled_running_issues(state)
+  defp buffer_pending_worker_update(%State{} = state, issue_id, update) do
+    pending_worker_updates =
+      Map.update(state.pending_worker_updates || %{}, issue_id, [update], fn updates ->
+        (updates ++ [update])
+        |> Enum.take(-25)
+      end)
+
+    %{state | pending_worker_updates: pending_worker_updates}
+  end
+
+  defp apply_pending_worker_updates(running, pending_worker_updates)
+       when is_map(running) and is_map(pending_worker_updates) do
+    Enum.reduce(pending_worker_updates, {running, pending_worker_updates}, fn {issue_id, updates}, {running_acc, pending_acc} ->
+      case Map.get(running_acc, issue_id) do
+        nil ->
+          {running_acc, pending_acc}
+
+        running_entry ->
+          updated_entry =
+            Enum.reduce(updates, running_entry, fn
+              {:worker_runtime_info, runtime_info}, entry ->
+                apply_worker_runtime_info_update(entry, runtime_info)
+
+              {:agent_worker_update, update}, entry ->
+                {updated_entry, _token_delta} = integrate_agent_update(entry, update)
+                updated_entry
+
+              _unknown, entry ->
+                entry
+            end)
+
+          {Map.put(running_acc, issue_id, updated_entry), Map.delete(pending_acc, issue_id)}
+      end
+    end)
+  end
+
+  defp apply_pending_worker_updates(running, pending_worker_updates), do: {running, pending_worker_updates || %{}}
+
+  defp apply_worker_runtime_info_update(running_entry, runtime_info) do
+    running_entry
+    |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
+    |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
+    |> apply_attempt_phase("workspace_created")
+  end
+
+  defp merge_poll_running_entries(%State{} = current_state, %State{} = poll_state) do
+    poll_state.running
+    |> Enum.reject(fn {issue_id, _entry} ->
+      stale_poll_running_entry?(current_state, issue_id)
+    end)
+    |> Map.new(fn {issue_id, poll_entry} ->
+      {issue_id, choose_running_entry(Map.get(current_state.running, issue_id), poll_entry)}
+    end)
+  end
+
+  defp choose_running_entry(nil, poll_entry), do: poll_entry
+
+  defp choose_running_entry(current_entry, poll_entry) do
+    if attempt_phase_rank(Map.get(poll_entry, :phase)) > attempt_phase_rank(Map.get(current_entry, :phase)) do
+      poll_entry
+    else
+      current_entry
+    end
+  end
+
+  defp attempt_phase_rank(phase) when is_binary(phase) do
+    [
+      "claimed",
+      "workspace_created",
+      "branch_prepared",
+      "session_ready",
+      "prompt_sent",
+      "agent_running",
+      "agent_completed",
+      "validation_running",
+      "validation_passed",
+      "branch_pushed",
+      "pr_created",
+      "linear_updated"
+    ]
+    |> Enum.find_index(&(&1 == normalize_attempt_phase(phase)))
+    |> case do
+      nil -> -1
+      index -> index
+    end
+  end
+
+  defp attempt_phase_rank(_phase), do: -1
+
+  defp stale_poll_running_entry?(%State{} = current_state, issue_id) do
+    cond do
+      Map.has_key?(current_state.running, issue_id) -> false
+      Map.has_key?(current_state.blocked, issue_id) -> true
+      MapSet.member?(current_state.completed, issue_id) -> true
+      MapSet.member?(current_state.claimed, issue_id) -> true
+      true -> false
+    end
+  end
+
+  defp merge_poll_claimed(poll_claimed, running, blocked) do
+    blocked_ids = Map.keys(blocked) |> MapSet.new()
+    running_ids = Map.keys(running) |> MapSet.new()
+
+    poll_claimed
+    |> MapSet.union(running_ids)
+    |> MapSet.difference(blocked_ids)
+  end
+
+  defp reconcile_running_issues(%State{} = state, orchestrator_pid) do
+    state = reconcile_stalled_running_issues(state, orchestrator_pid)
     state = expire_blocked_entries(state)
     running_ids = Map.keys(state.running)
 
@@ -633,7 +746,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp reconcile_stalled_running_issues(%State{} = state) do
+  defp reconcile_stalled_running_issues(%State{} = state, orchestrator_pid \\ self()) do
     timeout_ms = Config.settings!().agent.stall_timeout_ms
 
     cond do
@@ -653,10 +766,100 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry = Map.get(state_acc.running, issue_id)
           state_acc = maybe_poll_acpx_session_stream(state_acc, issue_id, running_entry)
           running_entry = Map.get(state_acc.running, issue_id)
-          restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
+          state_acc = maybe_reconcile_orphaned_running_entry(state_acc, issue_id, running_entry)
+          running_entry = Map.get(state_acc.running, issue_id)
+
+          if is_nil(running_entry) do
+            state_acc
+          else
+            state_acc = maybe_finalize_completed_agent_work(state_acc, issue_id, running_entry, orchestrator_pid)
+            running_entry = Map.get(state_acc.running, issue_id)
+            restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
+          end
         end)
     end
   end
+
+  defp maybe_reconcile_orphaned_running_entry(state, _issue_id, nil), do: state
+
+  defp maybe_reconcile_orphaned_running_entry(state, issue_id, running_entry) do
+    pid = Map.get(running_entry, :pid)
+    workspace_path = Map.get(running_entry, :workspace_path)
+
+    cond do
+      is_pid(pid) and Process.alive?(pid) ->
+        state
+
+      is_binary(workspace_path) and workspace_path != "" and AgentRunner.agent_completed_work?(workspace_path) ->
+        state
+
+      true ->
+        stall_timeout_ms = Config.settings!().agent.stall_timeout_ms
+        now = DateTime.utc_now()
+        latest_event_at = Map.get(running_entry, :latest_event_at)
+        last_workspace_activity_at = Map.get(running_entry, :last_workspace_activity_at)
+
+        event_stale = is_nil(latest_event_at) or DateTime.diff(now, latest_event_at, :millisecond) > stall_timeout_ms
+        workspace_stale = is_nil(last_workspace_activity_at) or DateTime.diff(now, last_workspace_activity_at, :millisecond) > stall_timeout_ms
+
+        if event_stale and workspace_stale do
+          Logger.warning("Orphaned running entry detected: issue_id=#{issue_id} identifier=#{Map.get(running_entry, :identifier)}; blocking issue")
+
+          state
+          |> block_issue(
+            issue_id,
+            %{
+              identifier: Map.get(running_entry, :identifier),
+              workspace_path: workspace_path,
+              reason: "orphaned_running_entry",
+              dirty_files: [],
+              last_error: "agent process dead with no progress signals"
+            },
+            DateTime.utc_now()
+          )
+          |> Map.put(:running, Map.delete(state.running, issue_id))
+        else
+          state
+        end
+    end
+  end
+
+  defp maybe_finalize_completed_agent_work(%State{} = state, issue_id, running_entry, orchestrator_pid)
+       when is_binary(issue_id) and is_map(running_entry) do
+    workspace_path = Map.get(running_entry, :workspace_path)
+    status = Map.get(running_entry, :status, :running)
+
+    cond do
+      status in [:finalizing, :terminating] ->
+        state
+
+      is_binary(workspace_path) and workspace_path != "" and AgentRunner.agent_completed_work?(workspace_path) ->
+        Logger.info("Agent completion report detected before process exit: issue_id=#{issue_id}; handing off to control-plane PR flow")
+
+        if is_pid(Map.get(running_entry, :pid)) do
+          terminate_task(Map.get(running_entry, :pid))
+        end
+
+        if is_reference(Map.get(running_entry, :ref)) do
+          Process.demonitor(Map.get(running_entry, :ref), [:flush])
+        end
+
+        completed_entry = advance_running_entry_to_agent_completed(running_entry)
+
+        case maybe_start_control_plane_pr_flow(issue_id, completed_entry, orchestrator_pid) do
+          {:started, finalizing_entry} ->
+            %{state | running: Map.put(state.running, issue_id, finalizing_entry)}
+
+          :skip ->
+            state
+        end
+
+      true ->
+        state
+    end
+  end
+
+  defp maybe_finalize_completed_agent_work(state, _issue_id, _running_entry, _orchestrator_pid), do: state
 
   defp maybe_update_workspace_activity(state, issue_id, running_entry) do
     workspace_path = Map.get(running_entry, :workspace_path)
@@ -690,37 +893,41 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    case stall_status(running_entry, now, timeout_ms) do
-      :not_stalled ->
-        state
-
-      :maybe_stalled ->
-        Logger.info("Agent process alive but no raw events or workspace activity for issue_id=#{issue_id}; extending observation")
-        state
-
-      :stalled ->
-        identifier = Map.get(running_entry, :identifier, issue_id)
-        session_id = running_entry_session_id(running_entry)
-
-        if Map.get(running_entry, :status) == :terminating do
-          Logger.warning("Issue already terminating: issue_id=#{issue_id} issue_identifier=#{identifier}; waiting for shutdown")
+    if not is_map(running_entry) or Map.get(running_entry, :status) == :finalizing do
+      state
+    else
+      case stall_status(running_entry, now, timeout_ms) do
+        :not_stalled ->
           state
-        else
-          Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id}; terminating attempt")
 
-          pid = Map.get(running_entry, :pid)
+        :maybe_stalled ->
+          Logger.info("Agent process alive but no raw events or workspace activity for issue_id=#{issue_id}; extending observation")
+          state
 
-          if is_pid(pid) do
-            terminate_task(pid)
+        :stalled ->
+          identifier = Map.get(running_entry, :identifier, issue_id)
+          session_id = running_entry_session_id(running_entry)
+
+          if Map.get(running_entry, :status) == :terminating do
+            Logger.warning("Issue already terminating: issue_id=#{issue_id} issue_identifier=#{identifier}; waiting for shutdown")
+            state
+          else
+            Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id}; terminating attempt")
+
+            pid = Map.get(running_entry, :pid)
+
+            if is_pid(pid) do
+              terminate_task(pid)
+            end
+
+            terminating_entry =
+              running_entry
+              |> Map.put(:status, :terminating)
+              |> Map.put(:force_kill_timer_ref, Process.send_after(self(), {:force_kill_attempt, issue_id}, @attempt_shutdown_timeout_ms))
+
+            %{state | running: Map.put(state.running, issue_id, terminating_entry)}
           end
-
-          terminating_entry =
-            running_entry
-            |> Map.put(:status, :terminating)
-            |> Map.put(:force_kill_timer_ref, Process.send_after(self(), {:force_kill_attempt, issue_id}, @attempt_shutdown_timeout_ms))
-
-          %{state | running: Map.put(state.running, issue_id, terminating_entry)}
-        end
+      end
     end
   end
 
@@ -741,10 +948,9 @@ defmodule SymphonyElixir.Orchestrator do
     acpx_record_id = Map.get(running_entry, :acpx_record_id)
 
     if is_binary(acpx_record_id) do
-      current_source = Map.get(running_entry, :progress_source, "none")
-      needs_poll = current_source in ["none", "process_alive", "stalled_no_events", "workspace_activity"]
-
-      if needs_poll do
+      if Map.get(running_entry, :status) in [:terminating, :finalizing] do
+        state
+      else
         stream_bytes_read = Map.get(running_entry, :stream_bytes_read, 0)
 
         progress =
@@ -754,37 +960,77 @@ defmodule SymphonyElixir.Orchestrator do
             session_root: state.acpx_session_root
           )
 
-        if progress.latest_event_at != nil do
-          updated =
-            running_entry
-            |> Map.put(:last_raw_event_at, progress.latest_event_at)
-            |> Map.put(:last_raw_preview, progress.latest_preview || Map.get(running_entry, :last_raw_preview))
-            |> Map.put(:last_agent_message, progress.latest_message || Map.get(running_entry, :last_agent_message))
-            |> Map.put(:progress_source, "acpx_session_stream")
-            |> Map.put(:stream_bytes_read, progress.bytes_read)
-            |> update_token_usage_from_stream(progress)
-            |> then(fn entry ->
-              if progress.parser_errors > 0 do
-                Map.update!(entry, :consecutive_parser_errors, &(&1 + progress.parser_errors))
-              else
-                Map.put(entry, :consecutive_parser_errors, 0)
-              end
-            end)
+        cond do
+          progress.latest_error != nil ->
+            handle_acpx_stream_error(state, issue_id, running_entry, progress)
 
-          %{state | running: Map.put(state.running, issue_id, updated)}
-        else
-          if progress.stream_exists do
+          progress.latest_event_at != nil ->
+            updated =
+              running_entry
+              |> Map.put(:last_raw_event_at, progress.latest_event_at)
+              |> Map.put(:last_raw_preview, progress.latest_preview || Map.get(running_entry, :last_raw_preview))
+              |> Map.put(:last_agent_message, progress.latest_message || Map.get(running_entry, :last_agent_message))
+              |> Map.put(:progress_source, "acpx_session_stream")
+              |> Map.put(:stream_bytes_read, progress.bytes_read)
+              |> update_token_usage_from_stream(progress)
+              |> then(fn entry ->
+                if progress.parser_errors > 0 do
+                  Map.update!(entry, :consecutive_parser_errors, &(&1 + progress.parser_errors))
+                else
+                  Map.put(entry, :consecutive_parser_errors, 0)
+                end
+              end)
+
+            %{state | running: Map.put(state.running, issue_id, updated)}
+
+          progress.stream_exists ->
             %{state | running: Map.put(state.running, issue_id, Map.put(running_entry, :stream_bytes_read, progress.bytes_read))}
-          else
+
+          true ->
             state
-          end
         end
-      else
-        state
       end
     else
       state
     end
+  end
+
+  defp handle_acpx_stream_error(state, issue_id, running_entry, progress) do
+    pid = Map.get(running_entry, :pid)
+
+    if is_pid(pid) do
+      terminate_task(pid)
+    end
+
+    if is_reference(Map.get(running_entry, :ref)) do
+      Process.demonitor(Map.get(running_entry, :ref), [:flush])
+    end
+
+    message =
+      progress.latest_error
+      |> Map.get("message", inspect(progress.latest_error))
+      |> to_string()
+
+    reason =
+      if String.contains?(String.downcase(message), "rate") or String.contains?(message, "429") do
+        "agent_rate_limited"
+      else
+        "agent_runtime_error"
+      end
+
+    block_issue(
+      state,
+      issue_id,
+      %{
+        identifier: Map.get(running_entry, :identifier),
+        workspace_path: Map.get(running_entry, :workspace_path),
+        reason: reason,
+        dirty_files: [],
+        last_error: message
+      },
+      DateTime.utc_now()
+    )
+    |> Map.put(:running, Map.delete(state.running, issue_id))
   end
 
   defp update_token_usage_from_stream(running_entry, progress) do
@@ -853,7 +1099,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp elapsed_since(_, _), do: 0
 
   defp terminate_task(pid) when is_pid(pid) do
-    case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
+    case terminate_orchestrator_task(pid) do
       :ok ->
         :ok
 
@@ -863,6 +1109,30 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminate_task(_pid), do: :ok
+
+  defp start_orchestrator_task(fun) when is_function(fun, 0) do
+    case Process.whereis(SymphonyElixir.TaskSupervisor) do
+      nil -> Task.start(fun)
+      _pid -> Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fun)
+    end
+  end
+
+  defp terminate_orchestrator_task(pid) when is_pid(pid) do
+    case Process.whereis(SymphonyElixir.TaskSupervisor) do
+      nil ->
+        Process.exit(pid, :shutdown)
+        :ok
+
+      _supervisor_pid ->
+        try do
+          Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid)
+        catch
+          :exit, _ ->
+            Process.exit(pid, :shutdown)
+            :ok
+        end
+    end
+  end
 
   defp choose_issues(issues, state, orchestrator_pid) do
     active_states = active_state_set()
@@ -1119,7 +1389,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+    case start_orchestrator_task(fn ->
            AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
          end) do
       {:ok, pid} ->
@@ -1451,6 +1721,12 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
 
+  @doc false
+  @spec expire_blocked_entries_for_test(State.t()) :: State.t()
+  def expire_blocked_entries_for_test(%State{} = state) do
+    expire_blocked_entries(state)
+  end
+
   @spec block_issue(State.t(), String.t(), map(), DateTime.t()) :: State.t()
   def block_issue(%State{} = state, issue_id, metadata, blocked_at) when is_binary(issue_id) and is_map(metadata) do
     %{
@@ -1484,6 +1760,12 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | blocked: Map.delete(state.blocked, issue_id)}
   end
 
+  defp blocked_ttl_for_reason(reason) when is_binary(reason) do
+    Map.get(@blocked_ttl_by_reason, reason, @blocked_ttl_by_reason[:default])
+  end
+
+  defp blocked_ttl_for_reason(_), do: @blocked_ttl_by_reason[:default]
+
   defp expire_blocked_entries(%State{blocked: blocked} = state) do
     now = DateTime.utc_now()
 
@@ -1492,7 +1774,8 @@ defmodule SymphonyElixir.Orchestrator do
       |> Enum.filter(fn {_issue_id, entry} ->
         case Map.get(entry, :blocked_at) do
           %DateTime{} = blocked_at ->
-            DateTime.diff(now, blocked_at, :second) > @blocked_ttl_seconds
+            ttl = blocked_ttl_for_reason(Map.get(entry, :reason))
+            DateTime.diff(now, blocked_at, :second) > ttl
 
           _ ->
             false
@@ -1933,7 +2216,20 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_start_control_plane_pr_flow(issue_id, running_entry) do
+  defp advance_running_entry_to_agent_completed(running_entry) do
+    running_entry
+    |> advance_running_entry_phase("agent_running")
+    |> advance_running_entry_phase("agent_completed")
+  end
+
+  defp advance_running_entry_phase(running_entry, phase) do
+    case apply_attempt_phase(running_entry, phase) do
+      %{phase: ^phase} = updated_entry -> updated_entry
+      _invalid_entry -> running_entry
+    end
+  end
+
+  defp maybe_start_control_plane_pr_flow(issue_id, running_entry, caller \\ self()) do
     workspace_path = Map.get(running_entry, :workspace_path)
     branch_name = Map.get(running_entry, :branch_name)
     issue = Map.get(running_entry, :issue)
@@ -1942,19 +2238,17 @@ defmodule SymphonyElixir.Orchestrator do
       not match?(%Issue{}, issue) -> :skip
       not is_binary(workspace_path) or workspace_path == "" -> :skip
       not is_binary(branch_name) or branch_name == "" -> :skip
-      true -> start_control_plane_pr_flow_task(issue_id, running_entry, issue, workspace_path, branch_name)
+      true -> start_control_plane_pr_flow_task(issue_id, running_entry, issue, workspace_path, branch_name, caller)
     end
   end
 
-  defp start_control_plane_pr_flow_task(issue_id, running_entry, issue, workspace_path, branch_name) do
-    caller = self()
-
+  defp start_control_plane_pr_flow_task(issue_id, running_entry, issue, workspace_path, branch_name, caller) do
     finalizing_entry =
       running_entry
       |> apply_attempt_phase("validation_running")
       |> Map.put(:status, :finalizing)
 
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+    case start_orchestrator_task(fn ->
            send(caller, {:control_plane_pr_flow_completed, issue_id, run_control_plane_pr_flow(issue, workspace_path, branch_name)})
          end) do
       {:ok, _pid} ->
@@ -2865,7 +3159,7 @@ defmodule SymphonyElixir.Orchestrator do
           me = self()
 
           {:ok, review_pid} =
-            Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+            start_orchestrator_task(fn ->
               review_result =
                 try do
                   Runner.run(issue, workspace_path, config)

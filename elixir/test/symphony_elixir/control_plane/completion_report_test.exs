@@ -147,6 +147,13 @@ defmodule SymphonyElixir.ControlPlane.CompletionReportTest do
       assert :ok = CompletionReport.validate_changed_files(report, opts)
     end
 
+    test "ignores the untracked control-plane completion directory from git changed files" do
+      report = %{"changed_files" => ["lib/a.ex"]}
+      opts = [changed_files: ["lib/a.ex", ".symphony/"]]
+
+      assert :ok = CompletionReport.validate_changed_files(report, opts)
+    end
+
     test "mismatch" do
       report = %{"changed_files" => ["lib/a.ex"]}
       opts = [changed_files: ["lib/a.ex", "lib/c.ex"]]

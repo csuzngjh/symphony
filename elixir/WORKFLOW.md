@@ -26,8 +26,9 @@ polling:
 workspace:
   root: D:/code/symphony-workspaces
 hooks:
+  timeout_ms: 300000
   after_create: |
-    git clone --depth 1 https://github.com/csuzngjh/principles . && (pnpm install 2>&1 || npm install 2>&1 || echo install skipped)
+    git clone --depth 1 https://github.com/csuzngjh/principles .
   before_remove: |
     echo "workspace cleanup for {{ issue.identifier }}"
 agent:

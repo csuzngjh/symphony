@@ -158,6 +158,32 @@ defmodule SymphonyElixir.ACPXSessionStreamTest do
       assert progress.token_usage.total_tokens == 300
     end
 
+    test "json-rpc error is exposed as latest_error for fail-loud orchestration" do
+      lines = [
+        ~S|{"jsonrpc":"2.0","id":4,"error":{"code":-32603,"message":"Internal error: API Error: Request rejected (429) rate limit"}}|
+      ]
+
+      progress = AcpxSessionStream.parse_stream_lines(lines, path: "test")
+
+      assert progress.latest_error["code"] == -32603
+      assert progress.latest_error["message"] =~ "429"
+      assert progress.latest_preview =~ "rate limit"
+      assert progress.latest_event_at != nil
+    end
+
+    test "session/load resource miss is not treated as fatal because ACPX follows with session/new" do
+      lines = [
+        ~S|{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"Resource not found: record-id"}}|,
+        ~s({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"abc","update":{"sessionUpdate":"usage_update","used":1,"size":200000}}})
+      ]
+
+      progress = AcpxSessionStream.parse_stream_lines(lines, path: "test")
+
+      assert progress.latest_error == nil
+      assert progress.latest_event_at != nil
+      assert progress.events_parsed == 2
+    end
+
     test "empty lines are skipped" do
       lines = [
         "",
