@@ -302,8 +302,24 @@ defmodule SymphonyElixir.AgentRunnerTest do
   end
 
   describe "agent_completed_work?/1" do
-    test "returns true when agent-completion.json exists with status completed" do
+    test "returns true when agent-completion.json exists with status ready_for_review" do
       dir = Path.join(System.tmp_dir!(), "test_agent_completed_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, ".symphony"))
+
+      try do
+        File.write!(
+          Path.join(dir, ".symphony/agent-completion.json"),
+          ~s({"status": "ready_for_review", "tests": [{"command": "mix test", "result": "passed"}]})
+        )
+
+        assert AgentRunner.agent_completed_work?(dir) == true
+      after
+        File.rm_rf(dir)
+      end
+    end
+
+    test "returns false when agent-completion.json uses ACPX turn status completed" do
+      dir = Path.join(System.tmp_dir!(), "test_agent_completed_alias_#{:erlang.unique_integer([:positive])}")
       File.mkdir_p!(Path.join(dir, ".symphony"))
 
       try do
@@ -312,7 +328,7 @@ defmodule SymphonyElixir.AgentRunnerTest do
           ~s({"status": "completed", "tests_passed": 19, "tests_failed": 0})
         )
 
-        assert AgentRunner.agent_completed_work?(dir) == true
+        assert AgentRunner.agent_completed_work?(dir) == false
       after
         File.rm_rf(dir)
       end

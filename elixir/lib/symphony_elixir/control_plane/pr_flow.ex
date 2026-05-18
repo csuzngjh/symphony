@@ -12,6 +12,7 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
   alias SymphonyElixir.Tracker
 
   @forbidden_path_prefixes [".trae/", ".planning/", "tmp-", "test-output"]
+  @control_plane_changed_files [".symphony/agent-completion.json"]
 
   @type command_runner ::
           (String.t(), [String.t()], keyword() -> {String.t(), non_neg_integer()})
@@ -32,10 +33,10 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
     tracker_update = Keyword.get(opts, :tracker_update, &Tracker.update_issue_state/2)
 
     with {:ok, changed_files} <- changed_files(workspace_path, command_runner),
-          :ok <- validate_changed_files(changed_files),
-          {:ok, completion_report} <- CompletionReport.read(workspace_path),
-          {:ok, _report} <- CompletionReport.validate(completion_report, changed_files: changed_files, command_runner: command_runner),
-          :ok <- git_add(workspace_path, changed_files, command_runner),
+         :ok <- validate_changed_files(changed_files),
+         {:ok, completion_report} <- CompletionReport.read(workspace_path),
+         {:ok, _report} <- CompletionReport.validate(completion_report, changed_files: changed_files, command_runner: command_runner),
+         :ok <- git_add(workspace_path, changed_files, command_runner),
          :ok <- git_commit(workspace_path, issue, command_runner),
          {:ok, commit_sha} <- git_rev_parse(workspace_path, command_runner),
          :ok <- git_push(workspace_path, branch_name, command_runner),
@@ -58,11 +59,21 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
   def changed_files(workspace_path, command_runner \\ &System.cmd/3) do
     case command_runner.("git", ["status", "--porcelain"], cd: workspace_path, stderr_to_stdout: true) do
       {"", 0} -> {:error, :no_changes}
-      {output, 0} -> {:ok, parse_porcelain(output)}
+      {output, 0} -> parsed_changed_files(output)
       {output, status} -> {:error, {:git_status_failed, status, String.trim(output)}}
     end
   rescue
     error -> {:error, {:git_status_exception, Exception.message(error)}}
+  end
+
+  defp parsed_changed_files(output) when is_binary(output) do
+    output
+    |> parse_porcelain()
+    |> Enum.reject(&control_plane_changed_file?/1)
+    |> case do
+      [] -> {:error, :no_changes}
+      changed_files -> {:ok, changed_files}
+    end
   end
 
   @spec validate_changed_files([String.t()]) :: :ok | {:error, term()}
@@ -112,6 +123,17 @@ defmodule SymphonyElixir.ControlPlane.PrFlow do
       String.starts_with?(normalized, prefix)
     end)
   end
+
+  defp control_plane_changed_file?(path) when is_binary(path) do
+    normalized =
+      path
+      |> normalize_git_path()
+      |> String.trim_leading("/")
+
+    normalized in @control_plane_changed_files
+  end
+
+  defp control_plane_changed_file?(_), do: false
 
   defp git_add(workspace_path, changed_files, command_runner) do
     case command_runner.("git", ["add", "--" | changed_files], cd: workspace_path, stderr_to_stdout: true) do

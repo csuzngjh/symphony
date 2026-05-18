@@ -65,7 +65,25 @@ When your work is complete and tests pass:
 2. Do NOT run `git push`.
 3. Do NOT run `gh pr create`.
 4. Do NOT update Linear status.
-5. Symphony will stage allowed files, commit, push, create the PR, and move Linear to In Review.
+5. Write `.symphony/agent-completion.json` exactly once with the completion report contract below.
+6. Symphony will stage allowed files, commit, push, create the PR, and move Linear to In Review after validating the report.
+
+Completion report contract:
+
+```json
+{
+  "status": "ready_for_review",
+  "changed_files": ["path/to/file.ext"],
+  "tests": [{"command": "exact command", "result": "passed"}],
+  "risks": ["known residual risk, or none"],
+  "notes": "short implementation summary"
+}
+```
+
+- Use `status: "ready_for_review"` only when code and tests are ready for PR.
+- Use `status: "blocked"` when you cannot complete the issue; include the blocker in `notes`.
+- `changed_files` must list only product/source/test/doc files you intentionally changed. Do not list `.symphony/agent-completion.json`.
+- At least one test command is required. If no test can be run, write the reason in `tests[0].result`.
 
 You are working on a Linear ticket `{{ issue.identifier }}`
 
@@ -145,6 +163,7 @@ Instructions:
 5. **每完成一个里程碑**，更新 workpad 的业务摘要
 6. 全部完成后：
    - 更新 workpad 最终版**业务摘要**
+   - 写入 `.symphony/agent-completion.json`，状态为 `ready_for_review` 或 `blocked`
    - 停止在本地文件改动状态
    - 不要创建 PR，不要把 PR 链接贴到 issue 上，不要变更 issue 状态
    - Symphony 会提交、推送、创建 PR，并把 issue 变更为 `In Review`
